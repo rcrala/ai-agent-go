@@ -6,7 +6,6 @@ import (
 	"ai-agent-go/internal/teams"
 	"context"
 	"fmt"
-	"io/ioutil"
 	"os"
 	"path/filepath"
 	"strings"
@@ -34,10 +33,10 @@ func main() {
 	results := []string{}
 	_ = filepath.Walk(".", func(path string, info os.FileInfo, err error) error {
 		if !info.IsDir() && (strings.HasSuffix(path, ".go") || strings.HasSuffix(path, ".py")) {
-			data, _ := ioutil.ReadFile(path)
+			data, _ := os.ReadFile(path)
 			res, err := ai.EvaluateCode(ctx, client, path, string(data))
 			if err == nil {
-				results = append(results, fmt.Sprintf("### %s\n%s", res.File, res.Recomendaciones))
+				results = append(results, fmt.Sprintf("### %s\n%s", res.File, res.Documentacion))
 			}
 		}
 		return nil
@@ -51,18 +50,43 @@ func main() {
 	if err != nil {
 		fmt.Println("Error updating file:", err)
 	}
-
+	var prInt int = 0
 	// Comenta en PR si aplica
 	if prNumber != "" && prNumber != "0" {
 		fmt.Println("Commenting on PR...")
 		// convertir prNumber a int
-		var prInt int
+		
 		fmt.Sscanf(prNumber, "%d", &prInt)
 		_ = githubClient.CommentOnPR(prInt, report)
 	}
 
 	// Notificación a Teams
 	if webhook != "" {
-		_ = teams.SendMessage(webhook, fmt.Sprintf("AI Agent report generated for branch %s", branch))
+		statusMsg := "✅ AI Agent ejecutado correctamente"
+		if err != nil {
+			statusMsg = fmt.Sprintf("⚠️ AI Agent completado con advertencias: %v", err)
+		}
+
+		var prInfo string
+		if prInt > 0 {
+			prInfo = fmt.Sprintf("Pull Request creado: [#%d](%s/pull/%d)", prNumber, repo, prInt)
+		} else {
+			prInfo = "No se generó Pull Request (posiblemente sin cambios detectables)."
+		}
+
+		message := fmt.Sprintf(`
+	**🤖 AI Code Review Agent**
+
+	%s  
+	**Repositorio:** %s  
+	**Rama:** %s  
+	**Resultado:** %s  
+
+	%s
+	`, statusMsg, repo, branch, prInfo, "El archivo *ARQUITECTURA_COMPLIANCE.md* fue analizado y actualizado con los hallazgos de concurrencia y cumplimiento de Twelve-Factor App.")
+
+		if err := teams.SendMessage(webhook, message); err != nil {
+			fmt.Println("Error al enviar notificación a Teams:", err)
+		}
 	}
 }
