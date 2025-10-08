@@ -24,10 +24,10 @@ jobs:
         with:
           go-version: "1.22"
 
-      - name: Build agent
+      - name: Grant execution permission
         run: |
           go mod download
-          go build -o ai-agent ./cmd/ai-agent
+          go build -o ai-agent-linux ./cmd/ai-agent
 
       - name: Run AI Agent
         env:
@@ -37,4 +37,4 @@ jobs:
           REPO_NAME: ${{ github.repository }}
           BRANCH_NAME: ${{ github.head_ref || github.ref_name }}
           PR_NUMBER: ${{ github.event.pull_request.number || '0' }}
-        run: ./ai-agent
+        run: ./ai-agent-linux
