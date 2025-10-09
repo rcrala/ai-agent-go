@@ -18,7 +18,7 @@ func main() {
 	// -----------------------------
 	// 1️⃣ Cargar configuración (JSON + ENV)
 	// -----------------------------
-	cfg, err := ai.LoadConfig("config\\config_AIAgent.json")
+	cfg, err := ai.LoadConfig("config", "config_AIAgent.json")
 	if err != nil {
 		log.Error("main", "LoadConfig", fmt.Sprintf("Error cargando configuración: %v", err))
 		os.Exit(1)

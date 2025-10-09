@@ -144,9 +144,11 @@ func RunSonarAnalysis(targetDir, hostURL, projectKey, token string) error {
 }
 
 // LoadConfig carga config desde JSON y sobrescribe con ENV
-func LoadConfig(path string) (*AgentConfig, error) {
+func LoadConfig(path string, filename string) (*AgentConfig, error) {
 	cfg := &AgentConfig{}
-	file, err := os.ReadFile(path)
+
+	filepath := filepath.Join(path, filename)
+	file, err := os.ReadFile(filepath)
 	if err != nil {
 		return nil, fmt.Errorf("error leyendo config default: %w", err)
 	}
