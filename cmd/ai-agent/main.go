@@ -82,6 +82,7 @@ func main() {
 
 // runAIAgent evalúa todos los archivos con AI Agent y devuelve Markdown
 func runAIAgent(ctx context.Context, client *ai.OpenAIClient, cfg *ai.AgentConfig, log *logger.Logger) (string, error) {
+
 	log.Info("AI", "runAIAgent", "Escaneando archivos en "+cfg.TargetDir)
 	files := ai.ScanFiles(cfg.TargetDir, []string{".go", ".py"})
 	if len(files) == 0 {

@@ -69,6 +69,7 @@ type OpenAIClient struct {
 }
 
 func NewOpenAIClient(apiKey, model string, maxTokens int, temperature float64) *OpenAIClient {
+
 	return &OpenAIClient{
 		Client:      openai.NewClient(apiKey),
 		Model:       model,
