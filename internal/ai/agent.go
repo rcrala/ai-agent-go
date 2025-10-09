@@ -17,21 +17,21 @@ import (
 // ------------------------------
 
 type EvaluationResult struct {
-	File                      string                    `json:"file"`
-	Score                     int                       `json:"score"`
+	File                       string                    `json:"file"`
+	Score                      int                       `json:"score"`
 	FactoresNoCumple           []string                  `json:"factores_no_cumple"`
 	ProblemasConcurrencia      []string                  `json:"problemas_concurrencia"`
 	RecomendacionesRefactor    string                    `json:"recomendaciones_refactor"`
 	RecomendacionesComentarios string                    `json:"recomendaciones_comentarios"`
 	Documentacion              string                    `json:"documentacion"`
-	EvaluacionFunciones        []FuncionEvaluationResult  `json:"evaluacion_funciones"`
+	EvaluacionFunciones        []FuncionEvaluationResult `json:"evaluacion_funciones"`
 }
 
 type FuncionEvaluationResult struct {
 	Funcion            string `json:"funcion"`
-	Claridad           string `json:"claridad"`             // Alta / Media / Baja
-	Complejidad        string `json:"complejidad"`          // Alta / Media / Baja
-	RiesgoConcurrencia string `json:"riesgo_concurrencia"`  // Alto / Medio / Bajo
+	Claridad           string `json:"claridad"`            // Alta / Media / Baja
+	Complejidad        string `json:"complejidad"`         // Alta / Media / Baja
+	RiesgoConcurrencia string `json:"riesgo_concurrencia"` // Alto / Medio / Bajo
 	Sugerencias        string `json:"sugerencias"`
 }
 
@@ -40,24 +40,24 @@ type FuncionEvaluationResult struct {
 // -----------------------------
 
 type AgentConfig struct {
-	OpenAIKey       string
-	OpenAIModel     string
-	MaxTokens       int
-	Temperature     float64
-	BatchSize       int
-	TargetDir       string
-	GitHubToken     string
-	GitHubRepo      string
-	BaseBranch      string
-	
-	RunAI                 bool
-	RunSonar              bool
-	SendTeamsNotification bool
+	OpenAIKey   string  `json:"OpenAIKey,omitempty"`
+	OpenAIModel string  `json:"OpenAIModel,omitempty"`
+	MaxTokens   int     `json:"MaxTokens,omitempty"`
+	Temperature float64 `json:"Temperature,omitempty"`
+	BatchSize   int     `json:"BatchSize,omitempty"`
+	TargetDir   string  `json:"TargetDir,omitempty"`
+	GitHubToken string  `json:"GitHubToken,omitempty"`
+	GitHubRepo  string  `json:"GitHubRepo,omitempty"`
+	BaseBranch  string  `json:"BaseBranch,omitempty"`
 
-	SonarHostURL    string
-	SonarProjectKey string
-	SonarToken      string
-	TeamsWebhookURL string
+	RunAI                 bool `json:"RunAI,omitempty"`
+	RunSonar              bool `json:"RunSonar,omitempty"`
+	SendTeamsNotification bool `json:"SendTeamsNotification,omitempty"`
+
+	SonarHostURL    string `json:"SonarHostURL,omitempty"`
+	SonarProjectKey string `json:"SonarProjectKey,omitempty"`
+	SonarToken      string `json:"SonarToken,omitempty"`
+	TeamsWebhookURL string `json:"TeamsWebhookURL,omitempty"`
 }
 
 // OpenAIClient envuelve el cliente OpenAI
@@ -107,7 +107,7 @@ func EvaluateFiles(ctx context.Context, client *OpenAIClient, files []string, ba
 			defer wg.Done()
 			defer func() { <-sem }()
 			contentBytes, _ := os.ReadFile(file)
-			res, err := EvaluateCode(ctx, client.Client, file, string(contentBytes),client.Model,client.MaxTokens,float32(client.Temperature))
+			res, err := EvaluateCode(ctx, client.Client, file, string(contentBytes), client.Model, client.MaxTokens, float32(client.Temperature))
 			if err != nil {
 				fmt.Println("Error evaluando:", file, err)
 				return
