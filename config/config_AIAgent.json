@@ -1,0 +1,15 @@
+{
+  "OpenAIKey": "",
+  "OpenAIModel": "gpt-4o-mini",
+  "MaxTokens": 1200,
+  "Temperature": 0.0,
+  "BatchSize": 3,
+  "TargetDir": "./",
+  "GitHubToken": "",
+  "GitHubRepo": "",
+  "BaseBranch": "main",
+  "SonarHostURL": "",
+  "SonarProjectKey": "",
+  "SonarToken": "",
+  "TeamsWebhookURL": ""
+}

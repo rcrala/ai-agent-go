@@ -1,136 +1,255 @@
 package githubclient
 
 import (
+	"bytes"
 	"context"
+	"encoding/base64"
+	"encoding/json"
 	"fmt"
+	"io"
+	"io/ioutil"
 
-	"github.com/google/go-github/v55/github"
-	"golang.org/x/oauth2"
+	"net/http"
+	"strings"
 )
 
 type GHClient struct {
 	ctx    context.Context
-	client *github.Client
-	repo   string // formato: "owner/repo"
-}
-
-type FileContent struct {
-	SHA string
+	Token  string
+	Repo   string
+	Client *http.Client
 }
 
 func NewGHClient(ctx context.Context, token, repo string) *GHClient {
-	ts := oauth2.StaticTokenSource(
-		&oauth2.Token{AccessToken: token},
-	)
-	tc := oauth2.NewClient(ctx, ts)
-	client := github.NewClient(tc)
-
 	return &GHClient{
 		ctx:    ctx,
-		client: client,
-		repo:   repo,
+		Token:  token,
+		Repo:   repo,
+		Client: &http.Client{},
 	}
 }
 
-// CreateBranch crea una nueva rama basada en la rama base
-func (g *GHClient) CreateBranch(branchName, baseBranch string) error {
-	owner, repo := parseRepo(g.repo)
+// -----------------------------
+// ESTRUCTURAS DE RESPUESTA
+// -----------------------------
 
-	// Obtener referencia base
-	baseRef, _, err := g.client.Git.GetRef(g.ctx, owner, repo, "refs/heads/"+baseBranch)
+type GitFile struct {
+	SHA string `json:"sha"`
+}
+
+// CreateBranch crea una rama temporal desde baseBranch
+func (c *GHClient) CreateBranch(tempBranch, baseBranch string) error {
+	url := fmt.Sprintf("https://api.github.com/repos/%s/git/refs", c.Repo)
+	payload := map[string]interface{}{
+		"ref": "refs/heads/" + tempBranch,
+		"sha": c.getBranchSHA(baseBranch),
+	}
+	body, _ := json.Marshal(payload)
+
+	req, _ := http.NewRequest("POST", url, bytes.NewReader(body))
+	req.Header.Set("Authorization", "token "+c.Token)
+	req.Header.Set("Accept", "application/vnd.github+json")
+
+	resp, err := c.Client.Do(req)
 	if err != nil {
-		return fmt.Errorf("error obteniendo referencia base: %w", err)
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode == 422 {
+		// La rama ya existe, se ignora
+		return nil
+	}
+	if resp.StatusCode >= 300 {
+		data, _ := ioutil.ReadAll(resp.Body)
+		return fmt.Errorf("error creando branch: %s", string(data))
+	}
+	return nil
+}
+
+// -----------------------------
+// FUNCIONES AUXILIARES
+// -----------------------------
+// getBranchSHA obtiene SHA de la rama base
+func (c *GHClient) getBranchSHA(branch string) string {
+	url := fmt.Sprintf("https://api.github.com/repos/%s/branches/%s", c.Repo, branch)
+	req, _ := http.NewRequest("GET", url, nil)
+	req.Header.Set("Authorization", "token "+c.Token)
+	req.Header.Set("Accept", "application/vnd.github+json")
+
+	resp, err := c.Client.Do(req)
+	if err != nil {
+		panic(err)
+	}
+	defer resp.Body.Close()
+	data, _ := io.ReadAll(resp.Body)
+	var respJSON map[string]interface{}
+	json.Unmarshal(data, &respJSON)
+	return respJSON["commit"].(map[string]interface{})["sha"].(string)
+}
+
+func (c *GHClient) request(method, url string, body []byte) ([]byte, error) {
+	req, err := http.NewRequestWithContext(c.ctx, method, url, bytes.NewReader(body))
+	if err != nil {
+		return nil, err
 	}
 
-	// Crear referencia nueva
-	ref := &github.Reference{
-		Ref: github.String("refs/heads/" + branchName),
-		Object: &github.GitObject{
-			SHA: baseRef.Object.SHA,
-		},
+	req.Header.Set("Authorization", "token "+c.Token)
+	req.Header.Set("Accept", "application/vnd.github+json")
+	if body != nil {
+		req.Header.Set("Content-Type", "application/json")
 	}
 
-	_, _, err = g.client.Git.CreateRef(g.ctx, owner, repo, ref)
+	resp, err := c.Client.Do(req)
 	if err != nil {
-		return fmt.Errorf("error creando rama temporal: %w", err)
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode >= 400 {
+		data, _ := io.ReadAll(resp.Body)
+		return nil, fmt.Errorf("GitHub API error: %s", string(data))
+	}
+
+	return io.ReadAll(resp.Body)
+}
+
+// -----------------------------
+// GESTIÓN DE RAMAS
+// -----------------------------
+
+// CreateBranch crea una nueva rama a partir de baseBranch
+func (c *GHClient) CreateBranchNew(newBranch, baseBranch string) error {
+	// Obtener SHA de la rama base
+	urlRef := fmt.Sprintf("https://api.github.com/repos/%s/git/ref/heads/%s", c.Repo, baseBranch)
+	body, err := c.request("GET", urlRef, nil)
+	if err != nil {
+		return fmt.Errorf("error obteniendo ref base: %w", err)
+	}
+
+	var refData struct {
+		Object struct {
+			SHA string `json:"sha"`
+		} `json:"object"`
+	}
+	if err := json.Unmarshal(body, &refData); err != nil {
+		return fmt.Errorf("error parseando JSON de ref base: %w", err)
+	}
+
+	// Crear la nueva rama
+	url := fmt.Sprintf("https://api.github.com/repos/%s/git/refs", c.Repo)
+	payload := map[string]string{
+		"ref": "refs/heads/" + newBranch,
+		"sha": refData.Object.SHA,
+	}
+	payloadBytes, _ := json.Marshal(payload)
+
+	_, err = c.request("POST", url, payloadBytes)
+	if err != nil {
+		if strings.Contains(err.Error(), "Reference already exists") {
+			return fmt.Errorf("la rama %s ya existe", newBranch)
+		}
+		return err
 	}
 
 	return nil
 }
 
-// GetFile obtiene el SHA de un archivo en una rama específica
-func (g *GHClient) GetFile(branch, path string) (*FileContent, error) {
-	owner, repo := parseRepo(g.repo)
+// -----------------------------
+// CREAR / ACTUALIZAR ARCHIVO
+// -----------------------------
 
-	file, _, resp, err := g.client.Repositories.GetContents(g.ctx, owner, repo, path, &github.RepositoryContentGetOptions{
-		Ref: branch,
-	})
+func (c *GHClient) GetFile(branch, path string) (*GitFile, error) {
+	url := fmt.Sprintf("https://api.github.com/repos/%s/contents/%s?ref=%s", c.Repo, path, branch)
+	data, err := c.request("GET", url, nil)
 	if err != nil {
-		if resp != nil && resp.StatusCode == 404 {
-			return nil, nil // archivo no existe
-		}
-		return nil, fmt.Errorf("error obteniendo archivo: %w", err)
+		return nil, err
 	}
 
-	return &FileContent{SHA: file.GetSHA()}, nil
+	var file GitFile
+	if err := json.Unmarshal(data, &file); err != nil {
+		return nil, err
+	}
+	return &file, nil
 }
 
 // CreateFile crea un archivo nuevo en la rama especificada
-func (g *GHClient) CreateFile(branch, path, content string) error {
-	owner, repo := parseRepo(g.repo)
-
-	opts := &github.RepositoryContentFileOptions{
-		Message: github.String("AI Agent: crear archivo " + path),
-		Content: []byte(content),
-		Branch:  github.String(branch),
+func (c *GHClient) CreateFile(branch, path, content string) error {
+	url := fmt.Sprintf("https://api.github.com/repos/%s/contents/%s", c.Repo, path)
+	payload := map[string]string{
+		"message": "AI Agent: Crear archivo " + path,
+		"content": base64.StdEncoding.EncodeToString([]byte(content)),
+		"branch":  branch,
 	}
+	payloadBytes, _ := json.Marshal(payload)
 
-	_, _, err := g.client.Repositories.CreateFile(g.ctx, owner, repo, path, opts)
-	if err != nil {
-		return fmt.Errorf("error creando archivo: %w", err)
-	}
-	return nil
+	_, err := c.request("PUT", url, payloadBytes)
+	return err
 }
 
 // UpdateFile actualiza un archivo existente usando su SHA
-func (g *GHClient) UpdateFile(branch, path, content, sha string) error {
-	owner, repo := parseRepo(g.repo)
-
-	opts := &github.RepositoryContentFileOptions{
-		Message: github.String("AI Agent: actualizar archivo " + path),
-		Content: []byte(content),
-		SHA:     github.String(sha),
-		Branch:  github.String(branch),
+func (c *GHClient) UpdateFile(branch, path, content, sha string) error {
+	url := fmt.Sprintf("https://api.github.com/repos/%s/contents/%s", c.Repo, path)
+	payload := map[string]string{
+		"message": "AI Agent: Actualizar archivo " + path,
+		"content": base64.StdEncoding.EncodeToString([]byte(content)),
+		"sha":     sha,
+		"branch":  branch,
 	}
+	payloadBytes, _ := json.Marshal(payload)
 
-	_, _, err := g.client.Repositories.UpdateFile(g.ctx, owner, repo, path, opts)
-	if err != nil {
-		return fmt.Errorf("error actualizando archivo: %w", err)
-	}
-	return nil
+	_, err := c.request("PUT", url, payloadBytes)
+	return err
 }
 
-// CreatePullRequest crea un PR desde branch temporal a branch base
-func (g *GHClient) CreatePullRequest(head, base, title, body string) (int, error) {
-	owner, repo := parseRepo(g.repo)
+// -----------------------------
+// PULL REQUEST
+// -----------------------------
 
-	newPR := &github.NewPullRequest{
-		Title: github.String(title),
-		Head:  github.String(head),
-		Base:  github.String(base),
-		Body:  github.String(body),
+// CreatePullRequest abre un PR desde sourceBranch hacia baseBranch
+func (c *GHClient) CreatePullRequest(sourceBranch, baseBranch, title, body string) (int, error) {
+	url := fmt.Sprintf("https://api.github.com/repos/%s/pulls", c.Repo)
+	payload := map[string]string{
+		"title": title,
+		"head":  sourceBranch,
+		"base":  baseBranch,
+		"body":  body,
 	}
+	payloadBytes, _ := json.Marshal(payload)
 
-	pr, _, err := g.client.PullRequests.Create(g.ctx, owner, repo, newPR)
+	respData, err := c.request("POST", url, payloadBytes)
 	if err != nil {
-		return 0, fmt.Errorf("error creando Pull Request: %w", err)
+		return 0, err
 	}
-	return pr.GetNumber(), nil
+
+	var pr struct {
+		Number int `json:"number"`
+	}
+	if err := json.Unmarshal(respData, &pr); err != nil {
+		return 0, err
+	}
+
+	return pr.Number, nil
 }
 
-// parseRepo divide "owner/repo"
-func parseRepo(full string) (string, string) {
-	var owner, repo string
-	fmt.Sscanf(full, "%[^/]/%s", &owner, &repo)
-	return owner, repo
+// CreateOrUpdateFileWithPR crea o actualiza un archivo y abre PR
+func CreateOrUpdateFileWithPR(ctx context.Context, c *GHClient, tempBranch, baseBranch, filePath, content string) (int, error) {
+	// 1️⃣ Crear o actualizar archivo
+	existingFile, err := c.GetFile(tempBranch, filePath)
+	if err != nil {
+		err = c.CreateFile(tempBranch, filePath, content)
+	} else {
+		err = c.UpdateFile(tempBranch, filePath, content, existingFile.SHA)
+	}
+	if err != nil {
+		return 0, err
+	}
+
+	// 2️⃣ Crear Pull Request
+	prTitle := "AI Agent: Actualización de arquitectura y cumplimiento"
+	prBody := "Se han generado recomendaciones automáticas de arquitectura y código mediante AI Agent y SonarQube."
+	prNumber, err := c.CreatePullRequest(tempBranch, baseBranch, prTitle, prBody)
+	if err != nil {
+		return 0, err
+	}
+	return prNumber, nil
 }
