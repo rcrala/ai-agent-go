@@ -6,10 +6,13 @@
   "BatchSize": 3,
   "TargetDir": "./",
   "GitHubToken": "",
-  "GitHubRepo": "",
-  "BaseBranch": "main",
+  "GitHubRepo": "rcrala/ai-agent-go",
+  "BaseBranch": "dev",
   "SonarHostURL": "",
   "SonarProjectKey": "",
   "SonarToken": "",
-  "TeamsWebhookURL": ""
+  "TeamsWebhookURL": "",
+  "RunAI": true,
+  "RunSonar": false,
+  "SendTeamsNotification": false
 }
