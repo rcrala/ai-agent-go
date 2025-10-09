@@ -176,6 +176,10 @@ func LoadConfig(path string, filename string) (*AgentConfig, error) {
 		}
 	}
 
+	apiKey := os.Getenv("OPENAI_API_KEY")
+	if apiKey == "" {
+		return nil, fmt.Errorf("OPENAI_API_KEY not set")
+	}
 	if v := os.Getenv("OPENAI_MAX_TOKENS"); v != "" {
 		fmt.Sscanf(v, "%d", &cfg.MaxTokens)
 	}
