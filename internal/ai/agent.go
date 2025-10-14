@@ -70,6 +70,10 @@ type OpenAIClient struct {
 
 func NewOpenAIClient(apiKey, model string, maxTokens int, temperature float64) *OpenAIClient {
 
+	if apiKey == "" {
+		fmt.Printf("Error evaluando: %s", apiKey)
+	}
+
 	return &OpenAIClient{
 		Client:      openai.NewClient(apiKey),
 		Model:       model,
