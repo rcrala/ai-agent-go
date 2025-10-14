@@ -15,6 +15,11 @@ func main() {
 	ctx := context.Background()
 	log := logger.NewLogger()
 
+	apiKey := os.Getenv("OPENAI_API_KEY")
+	if apiKey == "" {
+		fmt.Println("❌ OPENAI_API_KEY not found")
+		os.Exit(1)
+	}
 	// -----------------------------
 	// 1️⃣ Cargar configuración (JSON + ENV)
 	// -----------------------------

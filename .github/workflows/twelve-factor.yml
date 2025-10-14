@@ -19,6 +19,16 @@ jobs:
       contents: write
       pull-requests: write
     steps:
+      - name: Debug env vars
+        run: |
+          if [ -z "$OPENAI_API_KEY" ]; then
+            echo "❌ OPENAI_API_KEY is empty"
+            exit 1
+          else
+            echo "✅ OPENAI_API_KEY detected (length: ${#OPENAI_API_KEY})"
+          fi
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
       - name: Checkout repo
         uses: actions/checkout@v4
 
