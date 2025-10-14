@@ -34,7 +34,7 @@ func main() {
 	// -----------------------------
 	var openAIClient *ai.OpenAIClient
 	if cfg.RunAI {
-		openAIClient = ai.NewOpenAIClient(cfg.OpenAIKey, cfg.OpenAIModel, cfg.MaxTokens, cfg.Temperature)
+		openAIClient = ai.NewOpenAIClient(apiKey, cfg.OpenAIModel, cfg.MaxTokens, cfg.Temperature)
 	}
 
 	githubClient := githubclient.NewGHClient(ctx, cfg.GitHubToken, cfg.GitHubRepo)
