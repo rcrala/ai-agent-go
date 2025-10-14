@@ -14,5 +14,5 @@
   "TeamsWebhookURL": "",
   "RunAI": true,
   "RunSonar": false,
-  "SendTeamsNotification": false
+  "SendTeamsNotification": true
 }
