@@ -44,6 +44,7 @@ jobs:
 
       - name: Run AI Agent
         env:
+          USE_MOCK_MOTOR_AI: ${{ vars.USE_MOCK_MOTOR_AI }}
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
           TEAMS_WEBHOOK_URL: ${{ secrets.TEAMS_WEBHOOK_URL }}
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

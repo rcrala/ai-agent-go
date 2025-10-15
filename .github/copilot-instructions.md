@@ -35,9 +35,34 @@
 - **Teams**: Sends results to Teams via webhook if enabled.
 - **SonarQube**: Optional; controlled by config.
 
-## Examples
+
+## Copilot Agent Usage
+
+To enable and use the Copilot agent:
+
+1. In `config/config_AIAgent.json`, add or update an entry in the `Agents` array:
+
+	 ```json
+	 {
+		 "Type": "copilot",
+		 "Enabled": true,
+		 "Key": "", // or leave blank to use env var
+		 "Model": "copilot-2025",
+		 "MaxTokens": 1200,
+		 "Temperature": 0.0,
+		 "BatchSize": 3
+	 }
+	 ```
+
+2. Set the environment variable `COPILOT_API_KEY` with your Copilot API key (or set the `Key` field in config).
+
+3. Run the agent as usual (locally or via GitHub Action). The system will automatically use all enabled agents, including Copilot, with no code changes required in `main.go`.
+
+4. Review results in the generated report, PR, or Teams notification as configured.
+
+---
+
 - To add a new agent, create a new file (e.g., `myagent_agent.go`), implement the `CodeEvaluator` interface, and register it in the factory in `agent.go`.
-- To enable Copilot, add an agent entry in the `Agents` array with `"Type": "copilot"` and set the `COPILOT_API_KEY` environment variable.
 - To run only AI analysis, enable the desired agents in config and set `RunSonar: false`.
 
 ---

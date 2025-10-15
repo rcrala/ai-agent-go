@@ -31,13 +31,20 @@ func createOrUpdatePR(ctx context.Context, githubClient *githubclient.GHClient, 
 		log.Error("main", "CreateOrUpdateFileWithPR", fmt.Sprintf("Error creando/actualizando archivo o PR: %v", err))
 		return 0
 	}
+	log.Info("main", "createOrUpdatePR", fmt.Sprintf("PR creado/actualizado: %d", prNumber))
 	return prNumber
 }
 
 // sendTeamsNotificationIfNeeded sends a Teams notification if enabled
 func sendTeamsNotificationIfNeeded(cfg *ai.AgentConfig, tempBranch string, prNumber int) {
 	if cfg.SendTeamsNotification && cfg.TeamsWebhookURL != "" {
-		teams.SendMessage(cfg.TeamsWebhookURL, fmt.Sprintf("AI Agent report generado para branch %s. PR: %d", tempBranch, prNumber))
+		if err := teams.SendMessage(cfg.TeamsWebhookURL, fmt.Sprintf("AI Agent report generado para branch %s. PR: %d", tempBranch, prNumber)); err != nil {
+			log := logger.NewLogger()
+			log.Error("main", "sendTeamsNotificationIfNeeded", fmt.Sprintf("error enviando Teams: %v", err))
+		} else {
+			log := logger.NewLogger()
+			log.Info("main", "sendTeamsNotificationIfNeeded", "Notificación enviada a Teams")
+		}
 	}
 }
 

@@ -7,9 +7,6 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-	"sync"
-
-	openai "github.com/sashabaranov/go-openai"
 )
 
 // ------------------------------
@@ -48,6 +45,7 @@ type AgentConfig struct {
 
 	RunSonar              bool `json:"RunSonar,omitempty"`
 	SendTeamsNotification bool `json:"SendTeamsNotification,omitempty"`
+	UseMockMotorAI        bool `json:"UseMockMotorAI,omitempty"` // Global mock switch for all agents
 
 	SonarHostURL    string `json:"SonarHostURL,omitempty"`
 	SonarProjectKey string `json:"SonarProjectKey,omitempty"`
@@ -56,22 +54,18 @@ type AgentConfig struct {
 }
 
 type AIAgentConfig struct {
-	Type        string  `json:"Type"`
-	Enabled     bool    `json:"Enabled"`
-	Key         string  `json:"Key"`
-	Model       string  `json:"Model"`
-	MaxTokens   int     `json:"MaxTokens"`
-	Temperature float64 `json:"Temperature"`
-	BatchSize   int     `json:"BatchSize"`
+	Type              string  `json:"Type"`
+	Enabled           bool    `json:"Enabled"`
+	Key               string  `json:"Key"`
+	Model             string  `json:"Model"`
+	MaxTokens         int     `json:"MaxTokens"`
+	Temperature       float64 `json:"Temperature"`
+	BatchSize         int     `json:"BatchSize"`
+	RequestIntervalMs int     `json:"RequestIntervalMs,omitempty"` // Optional: ms to wait between requests
 }
 
 // OpenAIClient envuelve el cliente OpenAI
-type OpenAIClient struct {
-	Client      *openai.Client
-	Model       string
-	MaxTokens   int
-	Temperature float64
-}
+// OpenAIClient moved to internal/ai/openai_agent.go
 
 // CodeEvaluator defines the interface for all AI agents
 type CodeEvaluator interface {
@@ -166,20 +160,6 @@ func EvaluateFilesGeneric(ctx context.Context, evaluator CodeEvaluator, files []
 	return results, nil
 }
 
-func NewOpenAIClient(apiKey, model string, maxTokens int, temperature float64) *OpenAIClient {
-
-	if apiKey == "" {
-		fmt.Printf("Error evaluando: %s", apiKey)
-	}
-
-	return &OpenAIClient{
-		Client:      openai.NewClient(apiKey),
-		Model:       model,
-		MaxTokens:   maxTokens,
-		Temperature: temperature,
-	}
-}
-
 // ScanFiles busca archivos según extensiones
 func ScanFiles(root string, exts []string) []string {
 	files := []string{}
@@ -194,40 +174,6 @@ func ScanFiles(root string, exts []string) []string {
 		return nil
 	})
 	return files
-}
-
-// EvaluateFiles evalúa todos los archivos con concurrencia segura
-func EvaluateFiles(ctx context.Context, client *OpenAIClient, files []string, batchSize int) ([]*EvaluationResult, error) {
-	results := []*EvaluationResult{}
-	sem := make(chan struct{}, batchSize)
-	wg := sync.WaitGroup{}
-	resCh := make(chan *EvaluationResult)
-
-	for _, f := range files {
-		wg.Add(1)
-		sem <- struct{}{}
-		go func(file string) {
-			defer wg.Done()
-			defer func() { <-sem }()
-			contentBytes, _ := os.ReadFile(file)
-			res, err := EvaluateCode(ctx, client.Client, file, string(contentBytes), client.Model, client.MaxTokens, float32(client.Temperature))
-			if err != nil {
-				fmt.Println("Error evaluando:", file, err)
-				return
-			}
-			resCh <- res
-		}(f)
-	}
-
-	go func() {
-		wg.Wait()
-		close(resCh)
-	}()
-
-	for r := range resCh {
-		results = append(results, r)
-	}
-	return results, nil
 }
 
 // GenerateMarkdown genera un Markdown combinando resultados de evaluación
@@ -276,6 +222,30 @@ func LoadConfig(path string, filename string) (*AgentConfig, error) {
 	}
 
 	// Sobrescribir con ENV solo para campos generales
+	applyGeneralEnvOverrides(cfg)
+
+	// Global mock override
+	if v := os.Getenv("USE_MOCK_MOTOR_AI"); v != "" {
+		cfg.UseMockMotorAI = parseBoolEnv(v)
+	}
+
+	if cfg.TargetDir == "" {
+		cfg.TargetDir = "./"
+	}
+	if cfg.BaseBranch == "" {
+		cfg.BaseBranch = "main"
+	}
+
+	return cfg, nil
+}
+
+// parseBoolEnv interpreta valores de entorno como booleanos ('true','1','yes')
+func parseBoolEnv(v string) bool {
+	v = strings.ToLower(strings.TrimSpace(v))
+	return v == "true" || v == "1" || v == "yes" || v == "y"
+}
+
+func applyGeneralEnvOverrides(cfg *AgentConfig) {
 	envMap := map[string]*string{
 		"TARGET_DIR":        &cfg.TargetDir,
 		"GITHUB_TOKEN":      &cfg.GitHubToken,
@@ -292,40 +262,4 @@ func LoadConfig(path string, filename string) (*AgentConfig, error) {
 			*ptr = v
 		}
 	}
-
-	if cfg.TargetDir == "" {
-		cfg.TargetDir = "./"
-	}
-	if cfg.BaseBranch == "" {
-		cfg.BaseBranch = "main"
-	}
-
-	return cfg, nil
-}
-
-// -----------------------------
-// EVALUACIÓN DE CÓDIGO
-// -----------------------------
-
-func EvaluateCode(ctx context.Context, client *openai.Client, fileName, code, model string, maxTokens int, temperature float32) (*EvaluationResult, error) {
-	prompt := GetEvaluationPrompt(code)
-
-	resp, err := client.CreateChatCompletion(ctx, openai.ChatCompletionRequest{
-		Model:       model,
-		Messages:    []openai.ChatCompletionMessage{{Role: openai.ChatMessageRoleUser, Content: prompt}},
-		Temperature: temperature,
-		MaxTokens:   maxTokens,
-	})
-	if err != nil {
-		return nil, err
-	}
-
-	content := strings.TrimSpace(resp.Choices[0].Message.Content)
-
-	var result EvaluationResult
-	if err := json.Unmarshal([]byte(content), &result); err != nil {
-		return nil, fmt.Errorf("error parseando JSON de AI: %w", err)
-	}
-
-	return &result, nil
 }

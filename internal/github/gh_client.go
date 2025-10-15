@@ -9,6 +9,7 @@ import (
 	"io"
 	"io/ioutil"
 
+	logger "ai-agent-go/internal/logger"
 	"net/http"
 	"strings"
 )
@@ -18,14 +19,23 @@ type GHClient struct {
 	Token  string
 	Repo   string
 	Client *http.Client
+	log    *logger.Logger
 }
 
+const (
+	authTokenPrefix = "token "
+	acceptHeader    = "application/vnd.github+json"
+)
+
 func NewGHClient(ctx context.Context, token, repo string) *GHClient {
+	lg := logger.NewLogger()
+	lg.Info("github", "NewGHClient", fmt.Sprintf("Inicializando GHClient para repo %s", repo))
 	return &GHClient{
 		ctx:    ctx,
 		Token:  token,
 		Repo:   repo,
 		Client: &http.Client{},
+		log:    lg,
 	}
 }
 
@@ -47,8 +57,8 @@ func (c *GHClient) CreateBranch(tempBranch, baseBranch string) error {
 	body, _ := json.Marshal(payload)
 
 	req, _ := http.NewRequest("POST", url, bytes.NewReader(body))
-	req.Header.Set("Authorization", "token "+c.Token)
-	req.Header.Set("Accept", "application/vnd.github+json")
+	req.Header.Set("Authorization", authTokenPrefix+c.Token)
+	req.Header.Set("Accept", acceptHeader)
 
 	resp, err := c.Client.Do(req)
 	if err != nil {
@@ -73,11 +83,14 @@ func (c *GHClient) CreateBranch(tempBranch, baseBranch string) error {
 func (c *GHClient) getBranchSHA(branch string) string {
 	url := fmt.Sprintf("https://api.github.com/repos/%s/branches/%s", c.Repo, branch)
 	req, _ := http.NewRequest("GET", url, nil)
-	req.Header.Set("Authorization", "token "+c.Token)
-	req.Header.Set("Accept", "application/vnd.github+json")
+	req.Header.Set("Authorization", authTokenPrefix+c.Token)
+	req.Header.Set("Accept", acceptHeader)
 
 	resp, err := c.Client.Do(req)
 	if err != nil {
+		if c.log != nil {
+			c.log.Error("github", "getBranchSHA", fmt.Sprintf("Error HTTP obteniendo branch %s: %v", branch, err))
+		}
 		panic(err)
 	}
 	defer resp.Body.Close()
@@ -93,20 +106,26 @@ func (c *GHClient) request(method, url string, body []byte) ([]byte, error) {
 		return nil, err
 	}
 
-	req.Header.Set("Authorization", "token "+c.Token)
-	req.Header.Set("Accept", "application/vnd.github+json")
+	req.Header.Set("Authorization", authTokenPrefix+c.Token)
+	req.Header.Set("Accept", acceptHeader)
 	if body != nil {
 		req.Header.Set("Content-Type", "application/json")
 	}
 
 	resp, err := c.Client.Do(req)
 	if err != nil {
+		if c.log != nil {
+			c.log.Error("github", "request", fmt.Sprintf("HTTP request error: %v", err))
+		}
 		return nil, err
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode >= 400 {
 		data, _ := io.ReadAll(resp.Body)
+		if c.log != nil {
+			c.log.Error("github", "request", fmt.Sprintf("GitHub API error %d: %s", resp.StatusCode, string(data)))
+		}
 		return nil, fmt.Errorf("GitHub API error: %s", string(data))
 	}
 
@@ -132,6 +151,9 @@ func (c *GHClient) CreateBranchNew(newBranch, baseBranch string) error {
 		} `json:"object"`
 	}
 	if err := json.Unmarshal(body, &refData); err != nil {
+		if c.log != nil {
+			c.log.Error("github", "CreateBranchNew", fmt.Sprintf("error parseando ref base: %v", err))
+		}
 		return fmt.Errorf("error parseando JSON de ref base: %w", err)
 	}
 
@@ -145,6 +167,9 @@ func (c *GHClient) CreateBranchNew(newBranch, baseBranch string) error {
 
 	_, err = c.request("POST", url, payloadBytes)
 	if err != nil {
+		if c.log != nil {
+			c.log.Error("github", "CreateBranchNew", fmt.Sprintf("error creando branch %s: %v", newBranch, err))
+		}
 		if strings.Contains(err.Error(), "Reference already exists") {
 			return fmt.Errorf("la rama %s ya existe", newBranch)
 		}
@@ -183,6 +208,9 @@ func (c *GHClient) CreateFile(branch, path, content string) error {
 	payloadBytes, _ := json.Marshal(payload)
 
 	_, err := c.request("PUT", url, payloadBytes)
+	if err != nil && c.log != nil {
+		c.log.Error("github", "CreateFile", fmt.Sprintf("error creando archivo %s en %s: %v", path, branch, err))
+	}
 	return err
 }
 
@@ -198,6 +226,9 @@ func (c *GHClient) UpdateFile(branch, path, content, sha string) error {
 	payloadBytes, _ := json.Marshal(payload)
 
 	_, err := c.request("PUT", url, payloadBytes)
+	if err != nil && c.log != nil {
+		c.log.Error("github", "UpdateFile", fmt.Sprintf("error actualizando archivo %s en %s: %v", path, branch, err))
+	}
 	return err
 }
 
@@ -218,6 +249,9 @@ func (c *GHClient) CreatePullRequest(sourceBranch, baseBranch, title, body strin
 
 	respData, err := c.request("POST", url, payloadBytes)
 	if err != nil {
+		if c.log != nil {
+			c.log.Error("github", "CreatePullRequest", fmt.Sprintf("error creando PR: %v", err))
+		}
 		return 0, err
 	}
 
@@ -241,6 +275,9 @@ func CreateOrUpdateFileWithPR(ctx context.Context, c *GHClient, tempBranch, base
 		err = c.UpdateFile(tempBranch, filePath, content, existingFile.SHA)
 	}
 	if err != nil {
+		if c.log != nil {
+			c.log.Error("github", "CreateOrUpdateFileWithPR", fmt.Sprintf("error creando/actualizando archivo: %v", err))
+		}
 		return 0, err
 	}
 
@@ -249,7 +286,13 @@ func CreateOrUpdateFileWithPR(ctx context.Context, c *GHClient, tempBranch, base
 	prBody := "Se han generado recomendaciones automáticas de arquitectura y código mediante AI Agent y SonarQube."
 	prNumber, err := c.CreatePullRequest(tempBranch, baseBranch, prTitle, prBody)
 	if err != nil {
+		if c.log != nil {
+			c.log.Error("github", "CreateOrUpdateFileWithPR", fmt.Sprintf("error creando PR: %v", err))
+		}
 		return 0, err
+	}
+	if c.log != nil {
+		c.log.Info("github", "CreateOrUpdateFileWithPR", fmt.Sprintf("PR creado: %d", prNumber))
 	}
 	return prNumber, nil
 }
