@@ -27,7 +27,7 @@ func NewOpenAIEvaluator(cfg AIAgentConfig) *OpenAIEvaluator {
 func (o *OpenAIEvaluator) Evaluate(ctx context.Context, fileName, code string) (*EvaluationResult, error) {
 	lg := logger.NewLogger()
 	lg.Debug("openai", "Evaluate", fmt.Sprintf("Evaluando archivo %s", fileName))
-	res, err := evaluateCode(ctx, o.Client.Client, fileName, code, o)
+	res, err := evaluateCode(ctx, fileName, code, o)
 	if err != nil {
 		lg.Error("openai", "Evaluate", fmt.Sprintf("Error evaluando %s: %v", fileName, err))
 	}
@@ -57,20 +57,20 @@ func NewOpenAIClient(apiKey, model string, maxTokens int, temperature float64, I
 }
 
 // evaluateCode
-func evaluateCode(ctx context.Context, client *openai.Client, fileName, code string, o *OpenAIEvaluator) (*EvaluationResult, error) {
+func evaluateCode(ctx context.Context, fileName, code string, o *OpenAIEvaluator) (*EvaluationResult, error) {
 	// Validate if mock is enabled
 	if o.Client.IsMockEnabled {
-		return evaluateCodeMock(ctx, o.Client.Client, fileName, code, o.Client.Model, o.Client.MaxTokens, float32(o.Client.Temperature))
+		return evaluateCodeMock(ctx, fileName, code, o)
 	}
 	// Call the real OpenAI API
 	return evaluateCodeReal(ctx, o.Client.Client, fileName, code, o.Client.Model, o.Client.MaxTokens, float32(o.Client.Temperature))
 }
 
 // evaluateCode use a Mock Response and parses the result
-func evaluateCodeMock(ctx context.Context, client *openai.Client, fileName, code, model string, maxTokens int, temperature float32) (*EvaluationResult, error) {
+func evaluateCodeMock(ctx context.Context, fileName, code string, o *OpenAIEvaluator) (*EvaluationResult, error) {
 	lg := logger.NewLogger()
 	// prompt := GetEvaluationPrompt(code)
-	lg.Debug("openai", "Evaluate", fmt.Sprintf("Evaluando archivo %s with %s model in Mock mode %s", fileName, model, os.Getenv("USE_MOCK_MOTOR_AI")))
+	lg.Debug("openai", "Evaluate", fmt.Sprintf("Evaluando archivo %s with %s model in Mock mode %s", fileName, o.Client.Model, os.Getenv("USE_MOCK_MOTOR_AI")))
 
 	lg.Info("openai", "evaluateCode", "OPENAI_MOCK=true -> returning mock EvaluationResult")
 	mock := &EvaluationResult{

@@ -27,8 +27,15 @@ jobs:
           else
             echo "✅ OPENAI_API_KEY detected (length: ${#OPENAI_API_KEY})"
           fi
+          if [ -z "$USE_MOCK_MOTOR_AI" ]; then
+            echo "❌ USE_MOCK_MOTOR_AI is empty"
+            exit 1
+          else
+            echo "✅ USE_MOCK_MOTOR_AI detected (length: ${#USE_MOCK_MOTOR_AI})"
+          fi
         env:
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          USE_MOCK_MOTOR_AI: ${{ vars.USE_MOCK_MOTOR_AI }}
       - name: Checkout repo
         uses: actions/checkout@v4
 
