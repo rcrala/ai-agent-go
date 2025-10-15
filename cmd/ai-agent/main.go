@@ -8,100 +8,95 @@ import (
 	"ai-agent-go/internal/ai"
 	githubclient "ai-agent-go/internal/github"
 	"ai-agent-go/internal/logger"
-	"ai-agent-go/internal/teams"
+	teams "ai-agent-go/internal/teams"
 )
+
+// runSonarIfEnabled runs SonarQube analysis if enabled in config
+func runSonarIfEnabled(cfg *ai.AgentConfig, log *logger.Logger) string {
+	if !cfg.RunSonar {
+		return ""
+	}
+	markdownSonar, err := runSonarQube(cfg, log)
+	if err != nil {
+		log.Error("main", "runSonarQube", fmt.Sprintf("Error ejecutando SonarQube: %v", err))
+		return ""
+	}
+	return markdownSonar
+}
+
+// createOrUpdatePR creates or updates a PR with the report
+func createOrUpdatePR(ctx context.Context, githubClient *githubclient.GHClient, tempBranch string, cfg *ai.AgentConfig, finalReport string, log *logger.Logger) int {
+	prNumber, err := githubclient.CreateOrUpdateFileWithPR(ctx, githubClient, tempBranch, cfg.BaseBranch, "ARQUITECTURA_COMPLIANCE.md", finalReport)
+	if err != nil {
+		log.Error("main", "CreateOrUpdateFileWithPR", fmt.Sprintf("Error creando/actualizando archivo o PR: %v", err))
+		return 0
+	}
+	return prNumber
+}
+
+// sendTeamsNotificationIfNeeded sends a Teams notification if enabled
+func sendTeamsNotificationIfNeeded(cfg *ai.AgentConfig, tempBranch string, prNumber int) {
+	if cfg.SendTeamsNotification && cfg.TeamsWebhookURL != "" {
+		teams.SendMessage(cfg.TeamsWebhookURL, fmt.Sprintf("AI Agent report generado para branch %s. PR: %d", tempBranch, prNumber))
+	}
+}
 
 func main() {
 	ctx := context.Background()
 	log := logger.NewLogger()
 
-	apiKey := os.Getenv("OPENAI_API_KEY")
-	if apiKey == "" {
-		fmt.Println("❌ OPENAI_API_KEY not found")
-		os.Exit(1)
-	}
-	// -----------------------------
-	// 1️⃣ Cargar configuración (JSON + ENV)
-	// -----------------------------
+	cfg := loadConfigOrExit(log)
+	githubClient := githubclient.NewGHClient(ctx, cfg.GitHubToken, cfg.GitHubRepo)
+
+	markdownAI := runAIAgents(ctx, log, cfg)
+	markdownSonar := runSonarIfEnabled(cfg, log)
+
+	finalReport := combineReports(markdownAI, markdownSonar)
+	tempBranch := fmt.Sprintf("ai-agent-update-%d", os.Getpid())
+	prNumber := createOrUpdatePR(ctx, githubClient, tempBranch, cfg, finalReport, log)
+
+	sendTeamsNotificationIfNeeded(cfg, tempBranch, prNumber)
+	log.Info("main", "Completed", "Proceso finalizado")
+}
+
+func loadConfigOrExit(log *logger.Logger) *ai.AgentConfig {
 	cfg, err := ai.LoadConfig("config", "config_AIAgent.json")
 	if err != nil {
 		log.Error("main", "LoadConfig", fmt.Sprintf("Error cargando configuración: %v", err))
 		os.Exit(1)
 	}
-
-	// -----------------------------
-	// 2️⃣ Inicializar clientes externos
-	// -----------------------------
-	var openAIClient *ai.OpenAIClient
-	if cfg.RunAI {
-		openAIClient = ai.NewOpenAIClient(apiKey, cfg.OpenAIModel, cfg.MaxTokens, cfg.Temperature)
-	}
-
-	githubClient := githubclient.NewGHClient(ctx, cfg.GitHubToken, cfg.GitHubRepo)
-
-	// -----------------------------
-	// 3️⃣ Ejecutar AI Agent (opcional)
-	// -----------------------------
-	var markdownAI string
-	if cfg.RunAI {
-		markdownAI, err = runAIAgent(ctx, openAIClient, cfg, log)
-		if err != nil {
-			log.Error("main", "runAIAgent", fmt.Sprintf("Error ejecutando AI Agent: %v", err))
-		}
-	}
-
-	// -----------------------------
-	// 4️⃣ Ejecutar SonarQube (opcional)
-	// -----------------------------
-	var markdownSonar string
-	if cfg.RunSonar {
-		markdownSonar, err = runSonarQube(cfg, log)
-		if err != nil {
-			log.Error("main", "runSonarQube", fmt.Sprintf("Error ejecutando SonarQube: %v", err))
-		}
-	}
-
-	// -----------------------------
-	// 5️⃣ Combinar reportes
-	// -----------------------------
-	finalReport := combineReports(markdownAI, markdownSonar)
-
-	// -----------------------------
-	// 6️⃣ Crear rama temporal, archivo y PR
-	// -----------------------------
-	tempBranch := fmt.Sprintf("ai-agent-update-%d", os.Getpid())
-	prNumber, err := githubclient.CreateOrUpdateFileWithPR(ctx, githubClient, tempBranch, cfg.BaseBranch, "ARQUITECTURA_COMPLIANCE.md", finalReport)
-	if err != nil {
-		log.Error("main", "CreateOrUpdateFileWithPR", fmt.Sprintf("Error creando/actualizando archivo o PR: %v", err))
-	}
-
-	// -----------------------------
-	// 7️⃣ Notificación a Teams (opcional)
-	// -----------------------------
-	if cfg.SendTeamsNotification && cfg.TeamsWebhookURL != "" {
-		teams.SendMessage(cfg.TeamsWebhookURL, fmt.Sprintf("AI Agent report generado para branch %s. PR: %d", tempBranch, prNumber))
-	}
-
-	log.Info("main", "Completed", "Proceso finalizado")
+	return cfg
 }
 
-// runAIAgent evalúa todos los archivos con AI Agent y devuelve Markdown
-func runAIAgent(ctx context.Context, client *ai.OpenAIClient, cfg *ai.AgentConfig, log *logger.Logger) (string, error) {
-
-	log.Info("AI", "runAIAgent", "Escaneando archivos en "+cfg.TargetDir)
-	files := ai.ScanFiles(cfg.TargetDir, []string{".go", ".py"})
-	if len(files) == 0 {
-		log.Info("AI", "runAIAgent", "No se encontraron archivos para evaluar")
-		return "", nil
+func runAIAgents(ctx context.Context, log *logger.Logger, cfg *ai.AgentConfig) string {
+	var markdownAI string
+	if len(cfg.Agents) == 0 {
+		return markdownAI
 	}
-
-	results, err := ai.EvaluateFiles(ctx, client, files, cfg.BatchSize)
-	if err != nil {
-		return "", err
+	for _, agentCfg := range cfg.Agents {
+		if !agentCfg.Enabled {
+			continue
+		}
+		evaluator := ai.NewCodeEvaluator(agentCfg)
+		if evaluator == nil {
+			log.Error("AI", "NewCodeEvaluator", fmt.Sprintf("Tipo de agente no soportado: %s", agentCfg.Type))
+			continue
+		}
+		log.Info("AI", "runAIAgents", fmt.Sprintf("Evaluando archivos con agente: %s", agentCfg.Type))
+		files := ai.ScanFiles(cfg.TargetDir, []string{".go", ".py"})
+		if len(files) == 0 {
+			log.Info("AI", "runAIAgents", "No se encontraron archivos para evaluar")
+			continue
+		}
+		results, err := ai.EvaluateFilesGeneric(ctx, evaluator, files)
+		if err != nil {
+			log.Error("AI", "EvaluateFilesGeneric", fmt.Sprintf("Error evaluando archivos: %v", err))
+			continue
+		}
+		log.Info("AI", "runAIAgents", fmt.Sprintf("%d archivos evaluados por %s", len(results), agentCfg.Type))
+		markdownAI += ai.GenerateMarkdown(results)
 	}
-
-	log.Info("AI", "runAIAgent", fmt.Sprintf("%d archivos evaluados", len(results)))
-	return ai.GenerateMarkdown(results), nil
+	return markdownAI
 }
 
 // runSonarQube ejecuta análisis y genera resumen Markdown

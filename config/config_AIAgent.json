@@ -1,9 +1,24 @@
 {
-  "OpenAIKey": "",
-  "OpenAIModel": "gpt-4o-mini",
-  "MaxTokens": 1200,
-  "Temperature": 0.0,
-  "BatchSize": 3,
+  "Agents": [
+    {
+      "Type": "openai",
+      "Enabled": true,
+      "Key": "",
+      "Model": "gpt-4o-mini",
+      "MaxTokens": 1200,
+      "Temperature": 0.0,
+      "BatchSize": 3
+    },
+    {
+      "Type": "copilot",
+      "Enabled": false,
+      "Key": "",
+      "Model": "copilot-2025",
+      "MaxTokens": 1200,
+      "Temperature": 0.0,
+      "BatchSize": 3
+    }
+  ],
   "TargetDir": "./",
   "GitHubToken": "",
   "GitHubRepo": "rcrala/ai-agent-go",
@@ -12,7 +27,6 @@
   "SonarProjectKey": "",
   "SonarToken": "",
   "TeamsWebhookURL": "",
-  "RunAI": true,
   "RunSonar": false,
   "SendTeamsNotification": true
 }

@@ -40,17 +40,12 @@ type FuncionEvaluationResult struct {
 // -----------------------------
 
 type AgentConfig struct {
-	OpenAIKey   string  `json:"OpenAIKey,omitempty"`
-	OpenAIModel string  `json:"OpenAIModel,omitempty"`
-	MaxTokens   int     `json:"MaxTokens,omitempty"`
-	Temperature float64 `json:"Temperature,omitempty"`
-	BatchSize   int     `json:"BatchSize,omitempty"`
-	TargetDir   string  `json:"TargetDir,omitempty"`
-	GitHubToken string  `json:"GitHubToken,omitempty"`
-	GitHubRepo  string  `json:"GitHubRepo,omitempty"`
-	BaseBranch  string  `json:"BaseBranch,omitempty"`
+	Agents      []AIAgentConfig `json:"Agents"`
+	TargetDir   string          `json:"TargetDir,omitempty"`
+	GitHubToken string          `json:"GitHubToken,omitempty"`
+	GitHubRepo  string          `json:"GitHubRepo,omitempty"`
+	BaseBranch  string          `json:"BaseBranch,omitempty"`
 
-	RunAI                 bool `json:"RunAI,omitempty"`
 	RunSonar              bool `json:"RunSonar,omitempty"`
 	SendTeamsNotification bool `json:"SendTeamsNotification,omitempty"`
 
@@ -60,12 +55,115 @@ type AgentConfig struct {
 	TeamsWebhookURL string `json:"TeamsWebhookURL,omitempty"`
 }
 
+type AIAgentConfig struct {
+	Type        string  `json:"Type"`
+	Enabled     bool    `json:"Enabled"`
+	Key         string  `json:"Key"`
+	Model       string  `json:"Model"`
+	MaxTokens   int     `json:"MaxTokens"`
+	Temperature float64 `json:"Temperature"`
+	BatchSize   int     `json:"BatchSize"`
+}
+
 // OpenAIClient envuelve el cliente OpenAI
 type OpenAIClient struct {
 	Client      *openai.Client
 	Model       string
 	MaxTokens   int
 	Temperature float64
+}
+
+// CodeEvaluator defines the interface for all AI agents
+type CodeEvaluator interface {
+	Evaluate(ctx context.Context, fileName, code string) (*EvaluationResult, error)
+}
+
+// NewCodeEvaluator returns the appropriate agent implementation for the given config
+func NewCodeEvaluator(agentCfg AIAgentConfig) CodeEvaluator {
+	switch strings.ToLower(agentCfg.Type) {
+	case "openai":
+		return NewOpenAIEvaluator(agentCfg)
+	case "copilot":
+		return NewCopilotEvaluator(agentCfg)
+	case "youcom":
+		return NewYouComEvaluator(agentCfg)
+	case "anthropic":
+		return NewAnthropicEvaluator(agentCfg)
+	case "gemini":
+		return NewGeminiEvaluator(agentCfg)
+	case "cohere":
+		return NewCohereEvaluator(agentCfg)
+	case "mistral":
+		return NewMistralEvaluator(agentCfg)
+	default:
+		return nil
+	}
+}
+
+// GetEvaluationPrompt returns the evaluation prompt for any LLM agent
+func GetEvaluationPrompt(code string) string {
+	return fmt.Sprintf(`Eres un experto en desarrollo en Go (Golang) y arquitectura de software siguiendo los principios de The Twelve-Factor App. Evalúa el siguiente código considerando:
+
+1. Cumplimiento de los 12 factores (configuración, dependencias, logs, procesos, etc.).
+2. Buenas prácticas de Go, incluyendo:
+	- Nombres claros y consistentes de variables y funciones.
+	- Manejo adecuado de errores y defer.
+	- Modularidad y claridad en paquetes.
+	- Eficiencia y seguridad en la concurrencia usando goroutines y channels.
+	- Evitar bloqueos o deadlocks.
+	- Uso adecuado de buffers en channels y patrones de sincronización.
+3. Oportunidades para mejorar la concurrencia y rendimiento.
+4. Recomendaciones de **refactorización** para mantener simplicidad y claridad, mejorar mantenimiento y legibilidad.
+5. Recomendaciones sobre **comentarios claros** y documentación inline para facilitar la comprensión del código.
+6. Posibles problemas de mantenimiento o escalabilidad.
+7. Evaluación de cada función o método, indicando:
+	- Claridad
+	- Complejidad
+	- Riesgos de concurrencia
+	- Sugerencias de mejora
+
+Devuelve el resultado **en JSON con este formato exacto**:
+
+{
+	"file": "nombre_del_archivo",
+	"score": <0-100>,
+	"factores_no_cumple": ["Factor1", "Factor2"],
+	"problemas_concurrencia": ["Descripción corta de issues en goroutines/channels"],
+	"recomendaciones_refactor": "Texto corto sobre cómo simplificar, clarificar y mejorar el mantenimiento del código",
+	"recomendaciones_comentarios": "Sugerencias sobre dónde agregar comentarios y cómo redactarlos para claridad",
+	"documentacion": "Markdown con descripción de la arquitectura, patrones de concurrencia, configuración recomendada y buenas prácticas de mantenimiento",
+	"evaluacion_funciones": [
+		{
+			"funcion": "NombreDeLaFuncion",
+			"claridad": "Alta/Media/Baja",
+			"complejidad": "Alta/Media/Baja",
+			"riesgo_concurrencia": "Alto/Medio/Bajo",
+			"sugerencias": "Texto corto con mejoras específicas"
+		}
+	]
+}
+
+Código a evaluar:
+%s
+`, code)
+}
+
+// EvaluateFilesGeneric evalúa todos los archivos usando cualquier agente que implemente CodeEvaluator
+func EvaluateFilesGeneric(ctx context.Context, evaluator CodeEvaluator, files []string) ([]*EvaluationResult, error) {
+	results := []*EvaluationResult{}
+	for _, file := range files {
+		contentBytes, err := os.ReadFile(file)
+		if err != nil {
+			return nil, fmt.Errorf("error leyendo archivo %s: %w", file, err)
+		}
+		res, err := evaluator.Evaluate(ctx, file, string(contentBytes))
+		if err != nil {
+			fmt.Println("Error evaluando:", file, err)
+			continue
+		}
+		results = append(results, res)
+	}
+	return results, nil
 }
 
 func NewOpenAIClient(apiKey, model string, maxTokens int, temperature float64) *OpenAIClient {
@@ -161,10 +259,24 @@ func LoadConfig(path string, filename string) (*AgentConfig, error) {
 		return nil, fmt.Errorf("error parseando config default: %w", err)
 	}
 
-	// Sobrescribir con ENV
+	// Sobrescribir claves de agentes individuales por ENV (después de cargar config)
+	for i, agent := range cfg.Agents {
+		envKey := ""
+		switch strings.ToLower(agent.Type) {
+		case "openai":
+			envKey = "OPENAI_API_KEY"
+		case "copilot":
+			envKey = "COPILOT_API_KEY"
+		}
+		if envKey != "" {
+			if v := os.Getenv(envKey); v != "" {
+				cfg.Agents[i].Key = v
+			}
+		}
+	}
+
+	// Sobrescribir con ENV solo para campos generales
 	envMap := map[string]*string{
-		"OPENAI_KEY":        &cfg.OpenAIKey,
-		"OPENAI_MODEL":      &cfg.OpenAIModel,
 		"TARGET_DIR":        &cfg.TargetDir,
 		"GITHUB_TOKEN":      &cfg.GitHubToken,
 		"GITHUB_REPO":       &cfg.GitHubRepo,
@@ -181,23 +293,6 @@ func LoadConfig(path string, filename string) (*AgentConfig, error) {
 		}
 	}
 
-	if v := os.Getenv("OPENAI_API_KEY"); v != "" {
-		fmt.Sscanf(v, "%d", &cfg.OpenAIKey)
-	}
-	if v := os.Getenv("OPENAI_MAX_TOKENS"); v != "" {
-		fmt.Sscanf(v, "%d", &cfg.MaxTokens)
-	}
-	if v := os.Getenv("OPENAI_TEMPERATURE"); v != "" {
-		fmt.Sscanf(v, "%f", &cfg.Temperature)
-	}
-	if v := os.Getenv("BATCH_SIZE"); v != "" {
-		fmt.Sscanf(v, "%d", &cfg.BatchSize)
-	}
-
-	// Defaults
-	if cfg.OpenAIModel == "" {
-		cfg.OpenAIModel = "gpt-5"
-	}
 	if cfg.TargetDir == "" {
 		cfg.TargetDir = "./"
 	}
@@ -213,50 +308,7 @@ func LoadConfig(path string, filename string) (*AgentConfig, error) {
 // -----------------------------
 
 func EvaluateCode(ctx context.Context, client *openai.Client, fileName, code, model string, maxTokens int, temperature float32) (*EvaluationResult, error) {
-	prompt := fmt.Sprintf(`Eres un experto en desarrollo en Go (Golang) y arquitectura de software siguiendo los principios de The Twelve-Factor App. Evalúa el siguiente código considerando:
-
-1. Cumplimiento de los 12 factores (configuración, dependencias, logs, procesos, etc.).
-2. Buenas prácticas de Go, incluyendo:
-   - Nombres claros y consistentes de variables y funciones.
-   - Manejo adecuado de errores y defer.
-   - Modularidad y claridad en paquetes.
-   - Eficiencia y seguridad en la concurrencia usando goroutines y channels.
-   - Evitar bloqueos o deadlocks.
-   - Uso adecuado de buffers en channels y patrones de sincronización.
-3. Oportunidades para mejorar la concurrencia y rendimiento.
-4. Recomendaciones de **refactorización** para mantener simplicidad y claridad, mejorar mantenimiento y legibilidad.
-5. Recomendaciones sobre **comentarios claros** y documentación inline para facilitar la comprensión del código.
-6. Posibles problemas de mantenimiento o escalabilidad.
-7. Evaluación de cada función o método, indicando:
-   - Claridad
-   - Complejidad
-   - Riesgos de concurrencia
-   - Sugerencias de mejora
-
-Devuelve el resultado **en JSON con este formato exacto**:
-
-{
-  "file": "nombre_del_archivo",
-  "score": <0-100>,
-  "factores_no_cumple": ["Factor1", "Factor2"],
-  "problemas_concurrencia": ["Descripción corta de issues en goroutines/channels"],
-  "recomendaciones_refactor": "Texto corto sobre cómo simplificar, clarificar y mejorar el mantenimiento del código",
-  "recomendaciones_comentarios": "Sugerencias sobre dónde agregar comentarios y cómo redactarlos para claridad",
-  "documentacion": "Markdown con descripción de la arquitectura, patrones de concurrencia, configuración recomendada y buenas prácticas de mantenimiento",
-  "evaluacion_funciones": [
-    {
-      "funcion": "NombreDeLaFuncion",
-      "claridad": "Alta/Media/Baja",
-      "complejidad": "Alta/Media/Baja",
-      "riesgo_concurrencia": "Alto/Medio/Bajo",
-      "sugerencias": "Texto corto con mejoras específicas"
-    }
-  ]
-}
-
-Código a evaluar:
-%s
-`, code)
+	prompt := GetEvaluationPrompt(code)
 
 	resp, err := client.CreateChatCompletion(ctx, openai.ChatCompletionRequest{
 		Model:       model,
