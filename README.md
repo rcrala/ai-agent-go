@@ -61,3 +61,15 @@ Ejemplo de `config/config_AIAgent.json`:
 1. Agrega un bloque en `Agents` con `"Type": "copilot"` y `"Enabled": true`.
 2. Exporta la variable de entorno `COPILOT_API_KEY`.
 3. Ejecuta el agente normalmente.
+
+## Mock mode for testing
+You can run the agent without calling external LLM services by enabling mock mode.
+
+- Per-agent mock (OpenAI only): set `OPENAI_MOCK=true` in the environment.
+- Global mock for all agents: set `USE_MOCK_MOTOR_AI=true` in the environment. This overrides per-agent mock flags and forces mock responses across agents.
+
+PowerShell example:
+```powershell
+$env:USE_MOCK_MOTOR_AI = 'true'
+go run ./cmd/ai-agent
+```

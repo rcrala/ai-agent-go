@@ -62,6 +62,7 @@ type AIAgentConfig struct {
 	Temperature       float64 `json:"Temperature"`
 	BatchSize         int     `json:"BatchSize"`
 	RequestIntervalMs int     `json:"RequestIntervalMs,omitempty"` // Optional: ms to wait between requests
+	UseMockMotorAI    bool    `json:"UseMockMotorAI,omitempty"`
 }
 
 // OpenAIClient envuelve el cliente OpenAI
@@ -205,21 +206,8 @@ func LoadConfig(path string, filename string) (*AgentConfig, error) {
 		return nil, fmt.Errorf("error parseando config default: %w", err)
 	}
 
-	// Sobrescribir claves de agentes individuales por ENV (después de cargar config)
-	for i, agent := range cfg.Agents {
-		envKey := ""
-		switch strings.ToLower(agent.Type) {
-		case "openai":
-			envKey = "OPENAI_API_KEY"
-		case "copilot":
-			envKey = "COPILOT_API_KEY"
-		}
-		if envKey != "" {
-			if v := os.Getenv(envKey); v != "" {
-				cfg.Agents[i].Key = v
-			}
-		}
-	}
+	// Refactor: Move agent env override logic to helper
+	overrideAgentKeysWithEnv(cfg)
 
 	// Sobrescribir con ENV solo para campos generales
 	applyGeneralEnvOverrides(cfg)
@@ -237,6 +225,29 @@ func LoadConfig(path string, filename string) (*AgentConfig, error) {
 	}
 
 	return cfg, nil
+}
+
+// overrideAgentKeysWithEnv moves agent key/env override logic out of LoadConfig
+func overrideAgentKeysWithEnv(cfg *AgentConfig) {
+	for i, agent := range cfg.Agents {
+		envKey := ""
+		switch strings.ToLower(agent.Type) {
+		case "openai":
+			envKey = "OPENAI_API_KEY"
+		case "copilot":
+			envKey = "COPILOT_API_KEY"
+		}
+
+		if envKey != "" {
+			if v := os.Getenv(envKey); v != "" {
+				cfg.Agents[i].Key = v
+			}
+		}
+		// Global mock override for agent (if ever needed per agent)
+		if v := os.Getenv("USE_MOCK_MOTOR_AI"); v != "" {
+			cfg.Agents[i].UseMockMotorAI = parseBoolEnv(v)
+		}
+	}
 }
 
 // parseBoolEnv interpreta valores de entorno como booleanos ('true','1','yes')

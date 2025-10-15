@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"os"
 	"strings"
-	"sync"
 
 	openai "github.com/sashabaranov/go-openai"
 )
@@ -21,14 +20,14 @@ type OpenAIEvaluator struct {
 
 func NewOpenAIEvaluator(cfg AIAgentConfig) *OpenAIEvaluator {
 	return &OpenAIEvaluator{
-		Client: NewOpenAIClient(cfg.Key, cfg.Model, cfg.MaxTokens, cfg.Temperature),
+		Client: NewOpenAIClient(cfg.Key, cfg.Model, cfg.MaxTokens, cfg.Temperature, cfg.UseMockMotorAI),
 	}
 }
 
 func (o *OpenAIEvaluator) Evaluate(ctx context.Context, fileName, code string) (*EvaluationResult, error) {
 	lg := logger.NewLogger()
 	lg.Debug("openai", "Evaluate", fmt.Sprintf("Evaluando archivo %s", fileName))
-	res, err := evaluateCode(ctx, o.Client.Client, fileName, code, o.Client.Model, o.Client.MaxTokens, float32(o.Client.Temperature))
+	res, err := evaluateCode(ctx, o.Client.Client, fileName, code, o)
 	if err != nil {
 		lg.Error("openai", "Evaluate", fmt.Sprintf("Error evaluando %s: %v", fileName, err))
 	}
@@ -37,52 +36,69 @@ func (o *OpenAIEvaluator) Evaluate(ctx context.Context, fileName, code string) (
 
 // OpenAI-specific client wrapper
 type OpenAIClient struct {
-	Client      *openai.Client
-	Model       string
-	MaxTokens   int
-	Temperature float64
+	Client        *openai.Client
+	Model         string
+	MaxTokens     int
+	Temperature   float64
+	IsMockEnabled bool
 }
 
-func NewOpenAIClient(apiKey, model string, maxTokens int, temperature float64) *OpenAIClient {
+func NewOpenAIClient(apiKey, model string, maxTokens int, temperature float64, IsMockEnabled bool) *OpenAIClient {
 	if apiKey == "" {
 		fmt.Printf("Warning: OpenAI API key is empty")
 	}
 	return &OpenAIClient{
-		Client:      openai.NewClient(apiKey),
-		Model:       model,
-		MaxTokens:   maxTokens,
-		Temperature: temperature,
+		Client:        openai.NewClient(apiKey),
+		Model:         model,
+		MaxTokens:     maxTokens,
+		Temperature:   temperature,
+		IsMockEnabled: IsMockEnabled,
 	}
 }
 
+// evaluateCode
+func evaluateCode(ctx context.Context, client *openai.Client, fileName, code string, o *OpenAIEvaluator) (*EvaluationResult, error) {
+	// Validate if mock is enabled
+	if o.Client.IsMockEnabled {
+		return evaluateCodeMock(ctx, o.Client.Client, fileName, code, o.Client.Model, o.Client.MaxTokens, float32(o.Client.Temperature))
+	}
+	// Call the real OpenAI API
+	return evaluateCodeReal(ctx, o.Client.Client, fileName, code, o.Client.Model, o.Client.MaxTokens, float32(o.Client.Temperature))
+}
+
+// evaluateCode use a Mock Response and parses the result
+func evaluateCodeMock(ctx context.Context, client *openai.Client, fileName, code, model string, maxTokens int, temperature float32) (*EvaluationResult, error) {
+	lg := logger.NewLogger()
+	// prompt := GetEvaluationPrompt(code)
+	lg.Debug("openai", "Evaluate", fmt.Sprintf("Evaluando archivo %s with %s model in Mock mode %s", fileName, model, os.Getenv("USE_MOCK_MOTOR_AI")))
+
+	lg.Info("openai", "evaluateCode", "OPENAI_MOCK=true -> returning mock EvaluationResult")
+	mock := &EvaluationResult{
+		File:                       fileName,
+		Score:                      75,
+		FactoresNoCumple:           []string{"Dependencias no declaradas"},
+		ProblemasConcurrencia:      []string{"Uso de goroutines sin sincronización"},
+		RecomendacionesRefactor:    "Extraer funciones y simplificar responsabilidades.",
+		RecomendacionesComentarios: "Agregar comentarios en funciones públicas explicando el propósito y los efectos colaterales.",
+		Documentacion:              "Mock: arquitectura recomendada: modularizar paquetes y usar context.",
+		EvaluacionFunciones: []FuncionEvaluationResult{{
+			Funcion:            "MockFunc",
+			Claridad:           "Media",
+			Complejidad:        "Media",
+			RiesgoConcurrencia: "Medio",
+			Sugerencias:        "Usar canales o mutex donde corresponda.",
+		}},
+	}
+	return mock, nil
+
+}
+
 // evaluateCode calls the OpenAI API and parses the result
-func evaluateCode(ctx context.Context, client *openai.Client, fileName, code, model string, maxTokens int, temperature float32) (*EvaluationResult, error) {
+func evaluateCodeReal(ctx context.Context, client *openai.Client, fileName, code, model string, maxTokens int, temperature float32) (*EvaluationResult, error) {
 	lg := logger.NewLogger()
 	prompt := GetEvaluationPrompt(code)
 
-	lg.Debug("openai", "Evaluate", fmt.Sprintf("Evaluando archivo %s with %s model", fileName, model))
-
-	// Mock mode: when OPENAI_MOCK or global USE_MOCK_MOTOR_AI is set to "true", return a canned response for testing the full pipeline
-	if os.Getenv("OPENAI_MOCK") == "true" || os.Getenv("USE_MOCK_MOTOR_AI") == "true" {
-		lg.Info("openai", "evaluateCode", "OPENAI_MOCK=true -> returning mock EvaluationResult")
-		mock := &EvaluationResult{
-			File:                       fileName,
-			Score:                      75,
-			FactoresNoCumple:           []string{"Dependencias no declaradas"},
-			ProblemasConcurrencia:      []string{"Uso de goroutines sin sincronización"},
-			RecomendacionesRefactor:    "Extraer funciones y simplificar responsabilidades.",
-			RecomendacionesComentarios: "Agregar comentarios en funciones públicas explicando el propósito y los efectos colaterales.",
-			Documentacion:              "Mock: arquitectura recomendada: modularizar paquetes y usar context.",
-			EvaluacionFunciones: []FuncionEvaluationResult{{
-				Funcion:            "MockFunc",
-				Claridad:           "Media",
-				Complejidad:        "Media",
-				RiesgoConcurrencia: "Medio",
-				Sugerencias:        "Usar canales o mutex donde corresponda.",
-			}},
-		}
-		return mock, nil
-	}
+	lg.Debug("openai", "Evaluate", fmt.Sprintf("Evaluando archivo %s with %s model in Mock mode %s", fileName, model, os.Getenv("USE_MOCK_MOTOR_AI")))
 
 	resp, err := client.CreateChatCompletion(ctx, openai.ChatCompletionRequest{
 		Model:       model,
@@ -104,39 +120,4 @@ func evaluateCode(ctx context.Context, client *openai.Client, fileName, code, mo
 	}
 
 	return &result, nil
-}
-
-// EvaluateFiles evaluates files concurrently using OpenAI client (kept here for backwards compatibility)
-func EvaluateFiles(ctx context.Context, client *OpenAIClient, files []string, batchSize int) ([]*EvaluationResult, error) {
-	results := []*EvaluationResult{}
-	sem := make(chan struct{}, batchSize)
-	wg := sync.WaitGroup{}
-	resCh := make(chan *EvaluationResult)
-	lg := logger.NewLogger()
-	lg.Info("openai", "EvaluateFiles", fmt.Sprintf("Iniciando evaluación concurrente de %d archivos (batch %d)", len(files), batchSize))
-
-	for _, f := range files {
-		wg.Add(1)
-		sem <- struct{}{}
-		go func(file string) {
-			defer func() { <-sem; wg.Done() }()
-			contentBytes, _ := os.ReadFile(file)
-			res, err := evaluateCode(ctx, client.Client, file, string(contentBytes), client.Model, client.MaxTokens, float32(client.Temperature))
-			if err != nil {
-				lg.Error("openai", "EvaluateFiles", fmt.Sprintf("Error evaluando %s: %v", file, err))
-				return
-			}
-			resCh <- res
-		}(f)
-	}
-
-	go func() {
-		wg.Wait()
-		close(resCh)
-	}()
-
-	for r := range resCh {
-		results = append(results, r)
-	}
-	return results, nil
 }
