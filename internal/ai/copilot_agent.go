@@ -49,6 +49,10 @@ func evaluateCopilotCode(ctx context.Context, fileName, code string, c *CopilotE
 		return evaluateCopilotCodeMock(fileName, code, c)
 	}
 	// No real Copilot API integration implemented yet
+	// When implemented, wrap HTTP errors with HTTPError for proper retry logic:
+	// if resp.StatusCode >= 400 {
+	//   return nil, &HTTPError{StatusCode: resp.StatusCode, Message: "..."}
+	// }
 	return nil, fmt.Errorf("copilot real API integration not implemented")
 }
 

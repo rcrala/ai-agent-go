@@ -47,6 +47,11 @@ func evaluateYouComCode(ctx context.Context, fileName, code string, y *YouComEva
 	if y.Client.IsMockEnabled {
 		return evaluateYouComCodeMock(fileName, code, y)
 	}
+	// Real integration not implemented yet
+	// When implemented, wrap HTTP errors with HTTPError for proper retry logic:
+	// if resp.StatusCode >= 400 {
+	//   return nil, &HTTPError{StatusCode: resp.StatusCode, Message: "..."}
+	// }
 	return nil, fmt.Errorf("you.com real API integration not implemented")
 }
 

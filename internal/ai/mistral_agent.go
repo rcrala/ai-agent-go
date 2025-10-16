@@ -47,6 +47,11 @@ func evaluateMistralCode(ctx context.Context, fileName, code string, m *MistralE
 	if m.Client.IsMockEnabled {
 		return evaluateMistralCodeMock(fileName, code, m)
 	}
+	// Real integration not implemented yet
+	// When implemented, wrap HTTP errors with HTTPError for proper retry logic:
+	// if resp.StatusCode >= 400 {
+	//   return nil, &HTTPError{StatusCode: resp.StatusCode, Message: "..."}
+	// }
 	return nil, fmt.Errorf("mistral real API integration not implemented")
 }
 

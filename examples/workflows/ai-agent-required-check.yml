@@ -1,0 +1,188 @@
+name: AI Agent - Required Check
+
+# Verificación obligatoria de arquitectura antes de merge
+# Bloquea merge si score < 70
+# Ideal para: Branch protection en main/production
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+    branches:
+      - main
+      - master
+      - production
+
+jobs:
+  architecture-check:
+    runs-on: ubuntu-latest
+    
+    permissions:
+      contents: read
+      pull-requests: write
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      
+      - name: Download AI Agent binary
+        run: |
+          wget https://github.com/rcrala/ai-agent-go/releases/latest/download/ai-agent-linux
+          chmod +x ai-agent-linux
+      
+      - name: Run Architecture Review
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_REPO: ${{ github.repository }}
+          BASE_BRANCH: ${{ github.base_ref }}
+        run: |
+          echo "🔍 Running required architecture check..."
+          ./ai-agent-linux
+      
+      - name: Check minimum score requirement
+        id: check
+        run: |
+          if [ ! -f "ARQUITECTURE_COMPLIANCE.md" ]; then
+            echo "❌ Report not generated"
+            echo "result=failed" >> $GITHUB_OUTPUT
+            echo "score=0" >> $GITHUB_OUTPUT
+            exit 1
+          fi
+          
+          # Extract all scores
+          scores=$(grep -oP 'Score:\*\*\s*\K\d+' ARQUITECTURE_COMPLIANCE.md)
+          
+          if [ -z "$scores" ]; then
+            echo "❌ No scores found in report"
+            echo "result=failed" >> $GITHUB_OUTPUT
+            echo "score=0" >> $GITHUB_OUTPUT
+            exit 1
+          fi
+          
+          # Calculate average
+          avg=$(echo "$scores" | awk '{s+=$1; c++} END {print int(s/c)}')
+          echo "score=$avg" >> $GITHUB_OUTPUT
+          
+          # Minimum score requirement
+          MIN_SCORE=70
+          
+          echo "📊 Architecture Score: $avg/100"
+          echo "📏 Minimum Required: $MIN_SCORE/100"
+          
+          if [ "$avg" -lt "$MIN_SCORE" ]; then
+            echo "result=failed" >> $GITHUB_OUTPUT
+            echo ""
+            echo "❌ Architecture compliance check FAILED"
+            echo "   Score $avg is below minimum requirement of $MIN_SCORE"
+            echo ""
+            echo "Please address the following before merging:"
+            echo "1. Review compliance report in PR comments"
+            echo "2. Fix critical issues (score < 60)"
+            echo "3. Address concurrency problems"
+            echo "4. Improve code documentation"
+            echo ""
+            exit 1
+          else
+            echo "result=passed" >> $GITHUB_OUTPUT
+            echo ""
+            echo "✅ Architecture compliance check PASSED"
+            echo "   Score $avg meets minimum requirement of $MIN_SCORE"
+            echo ""
+          fi
+      
+      - name: Post result to PR
+        if: always()
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const result = '${{ steps.check.outputs.result }}';
+            const score = parseInt('${{ steps.check.outputs.score }}') || 0;
+            const minScore = 70;
+            
+            let emoji, color, status, message;
+            
+            if (result === 'failed' || score < minScore) {
+              emoji = '❌';
+              color = '🔴';
+              status = 'FAILED';
+              message = `This PR does not meet the minimum architecture compliance requirement.
+              
+              **Required Actions:**
+              - Review the detailed compliance report below
+              - Address files with scores below 60 (critical)
+              - Fix concurrency issues to prevent production bugs
+              - Improve code documentation and error handling
+              - Re-run this check after pushing fixes
+              
+              **Why this matters:**
+              Maintaining high code quality standards prevents:
+              - Production bugs and outages
+              - Technical debt accumulation
+              - Difficult maintenance and onboarding
+              - Security vulnerabilities`;
+            } else {
+              emoji = '✅';
+              color = '🟢';
+              status = 'PASSED';
+              message = `This PR meets the minimum architecture compliance standards and can be merged.`;
+            }
+            
+            const comment = `## ${emoji} Architecture Compliance Check: ${status}
+            
+            **Score:** ${color} **${score}/100** (Minimum: ${minScore})
+            
+            ${message}
+            
+            ---
+            
+            <sub>🤖 This is a required check. Contact your team lead if you believe this check is incorrect.</sub>
+            `;
+            
+            await github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: comment
+            });
+      
+      - name: Upload report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: required-check-report-pr-${{ github.event.pull_request.number }}
+          path: ARQUITECTURE_COMPLIANCE.md
+          retention-days: 90
+      
+      - name: Summary
+        if: always()
+        run: |
+          result="${{ steps.check.outputs.result }}"
+          score="${{ steps.check.outputs.score }}"
+          
+          echo "### 🔒 Required Architecture Check" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          
+          if [ "$result" = "passed" ]; then
+            echo "✅ **PASSED** - Score: $score/100" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "❌ **FAILED** - Score: $score/100 (Minimum: 70)" >> $GITHUB_STEP_SUMMARY
+          fi
+          
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "📄 [View Full Report](https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }})" >> $GITHUB_STEP_SUMMARY
+      
+      # This step will fail the workflow if score is too low
+      - name: Enforce minimum score
+        if: steps.check.outputs.result == 'failed'
+        run: |
+          echo "::error::Architecture compliance check failed. Score ${{ steps.check.outputs.score }} is below minimum (70)."
+          exit 1
+
+# To enable this as a required check:
+# 1. Go to repository Settings → Branches
+# 2. Add branch protection rule for 'main'
+# 3. Enable "Require status checks to pass before merging"
+# 4. Select "architecture-check" from the list
+# 5. Enable "Require branches to be up to date before merging"

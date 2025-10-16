@@ -109,6 +109,11 @@ func evaluateCodeReal(ctx context.Context, client *openai.Client, fileName, code
 	})
 	if err != nil {
 		lg.Error("openai", "evaluateCode", fmt.Sprintf("API error: %v", err))
+		// Try to extract HTTP status code from OpenAI SDK error
+		statusCode := extractStatusCodeFromOpenAIError(err)
+		if statusCode > 0 {
+			return nil, &HTTPError{StatusCode: statusCode, Message: err.Error()}
+		}
 		return nil, err
 	}
 
@@ -121,4 +126,44 @@ func evaluateCodeReal(ctx context.Context, client *openai.Client, fileName, code
 	}
 
 	return &result, nil
+}
+
+// extractStatusCodeFromOpenAIError attempts to extract HTTP status code from OpenAI SDK error.
+// The go-openai library wraps HTTP errors; we inspect the error string for status codes.
+func extractStatusCodeFromOpenAIError(err error) int {
+	if err == nil {
+		return 0
+	}
+	// Check if it's an openai.APIError (if the SDK exposes it)
+	type apiError interface {
+		HTTPStatusCode() int
+	}
+	if apiErr, ok := err.(apiError); ok {
+		return apiErr.HTTPStatusCode()
+	}
+
+	// Fallback: parse error string for "status code: 429" pattern
+	s := err.Error()
+	if idx := strings.Index(s, "status code: "); idx >= 0 {
+		codeStr := s[idx+len("status code: "):]
+		// extract digits
+		var code int
+		if _, parseErr := fmt.Sscanf(codeStr, "%d", &code); parseErr == nil {
+			return code
+		}
+	}
+	// Alternative pattern: "HTTP 429" or "429 Too Many Requests"
+	if strings.Contains(s, "429") {
+		return 429
+	}
+	if strings.Contains(s, "status: 429") {
+		return 429
+	}
+	// Check for 5xx
+	for code := 500; code < 600; code++ {
+		if strings.Contains(s, fmt.Sprintf("%d", code)) {
+			return code
+		}
+	}
+	return 0
 }

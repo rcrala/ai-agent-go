@@ -95,7 +95,7 @@ func evaluateCohereCode(ctx context.Context, fileName, code string, c *CohereEva
 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		lg.Error("cohere", "evaluateCohereCode", fmt.Sprintf("non-2xx response: %d body=%s", resp.StatusCode, string(bodyBytes)))
-		return nil, fmt.Errorf("cohere API returned status %d", resp.StatusCode)
+		return nil, &HTTPError{StatusCode: resp.StatusCode, Message: fmt.Sprintf("cohere API returned status %d: %s", resp.StatusCode, string(bodyBytes))}
 	}
 
 	// Expected response: { "generations": [ { "text": "..." } ] }

@@ -47,6 +47,11 @@ func evaluateGeminiCode(ctx context.Context, fileName, code string, g *GeminiEva
 	if g.Client.IsMockEnabled {
 		return evaluateGeminiCodeMock(fileName, code, g)
 	}
+	// Real integration not implemented yet
+	// When implemented, wrap HTTP errors with HTTPError for proper retry logic:
+	// if resp.StatusCode >= 400 {
+	//   return nil, &HTTPError{StatusCode: resp.StatusCode, Message: "..."}
+	// }
 	return nil, fmt.Errorf("gemini real API integration not implemented")
 }
 

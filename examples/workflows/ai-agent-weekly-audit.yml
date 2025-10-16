@@ -1,0 +1,290 @@
+name: AI Agent - Weekly Audit
+
+# Ejecuta auditoría arquitectónica programada (semanal)
+# Crea issue automático si score < 70
+# Ideal para: Monitoreo continuo de calidad del código
+
+on:
+  schedule:
+    - cron: '0 9 * * 1'  # Lunes a las 9:00 AM UTC
+  workflow_dispatch:      # Permite ejecución manual
+
+jobs:
+  weekly-audit:
+    runs-on: ubuntu-latest
+    
+    permissions:
+      contents: write
+      issues: write
+      pull-requests: write
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          ref: main  # Auditar branch principal
+          fetch-depth: 0
+      
+      - name: Download AI Agent binary
+        run: |
+          wget https://github.com/rcrala/ai-agent-go/releases/latest/download/ai-agent-linux
+          chmod +x ai-agent-linux
+      
+      - name: Run Weekly Architecture Audit
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          COHERE_API_KEY: ${{ secrets.COHERE_API_KEY }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_REPO: ${{ github.repository }}
+          BASE_BRANCH: main
+          TEAMS_WEBHOOK_URL: ${{ secrets.TEAMS_WEBHOOK_URL }}
+        run: |
+          echo "🔍 Starting weekly architecture audit..."
+          ./ai-agent-linux
+          echo "✅ Audit completed"
+      
+      - name: Analyze audit results
+        id: analysis
+        run: |
+          if [ ! -f "ARQUITECTURE_COMPLIANCE.md" ]; then
+            echo "status=failed" >> $GITHUB_OUTPUT
+            echo "average=0" >> $GITHUB_OUTPUT
+            exit 0
+          fi
+          
+          # Extract scores
+          scores=$(grep -oP 'Score:\*\*\s*\K\d+' ARQUITECTURE_COMPLIANCE.md || echo "0")
+          
+          if [ -z "$scores" ]; then
+            avg=0
+            file_count=0
+          else
+            avg=$(echo "$scores" | awk '{s+=$1; c++} END {if(c>0) print int(s/c); else print 0}')
+            file_count=$(echo "$scores" | wc -l)
+          fi
+          
+          echo "average=$avg" >> $GITHUB_OUTPUT
+          echo "file_count=$file_count" >> $GITHUB_OUTPUT
+          
+          if [ "$avg" -lt 70 ]; then
+            echo "status=action_required" >> $GITHUB_OUTPUT
+          elif [ "$avg" -lt 80 ]; then
+            echo "status=improvement_needed" >> $GITHUB_OUTPUT
+          else
+            echo "status=healthy" >> $GITHUB_OUTPUT
+          fi
+          
+          echo "📊 Audit complete: $file_count files, average score $avg"
+      
+      - name: Create issue if score is low
+        if: steps.analysis.outputs.status == 'action_required'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const report = fs.readFileSync('ARQUITECTURE_COMPLIANCE.md', 'utf8');
+            const avgScore = parseInt('${{ steps.analysis.outputs.average }}');
+            const fileCount = parseInt('${{ steps.analysis.outputs.file_count }}');
+            
+            // Extract top issues
+            const lines = report.split('\n');
+            let topIssues = [];
+            let inFactoresSection = false;
+            
+            for (let i = 0; i < lines.length; i++) {
+              if (lines[i].includes('### Factores no cumplidos')) {
+                inFactoresSection = true;
+                continue;
+              }
+              if (inFactoresSection && lines[i].startsWith('###')) {
+                inFactoresSection = false;
+              }
+              if (inFactoresSection && lines[i].trim().startsWith('-')) {
+                topIssues.push(lines[i].trim());
+              }
+              if (topIssues.length >= 10) break;
+            }
+            
+            const issueBody = `## ⚠️ Weekly Architecture Audit Alert
+            
+            **Date:** ${new Date().toISOString().split('T')[0]}  
+            **Average Score:** ${avgScore}/100  
+            **Files Analyzed:** ${fileCount}  
+            **Status:** 🔴 Below Standard (< 70)
+            
+            ### 🎯 Action Required
+            
+            The weekly architecture audit has detected compliance issues that require attention:
+            
+            ### 📋 Top Issues Found
+            
+            ${topIssues.length > 0 ? topIssues.slice(0, 10).join('\n') : 'See full report for details'}
+            
+            ### 📊 Recommendations
+            
+            1. **Review the full compliance report** attached to this issue
+            2. **Prioritize fixes** for files with scores below 60
+            3. **Address concurrency issues** to prevent production bugs
+            4. **Improve logging** to meet 12-factor app standards
+            5. **Schedule tech debt sprint** to address systemic issues
+            
+            ### 📎 Full Report
+            
+            <details>
+            <summary>Click to view complete audit report</summary>
+            
+            \`\`\`markdown
+            ${report.length > 50000 ? report.substring(0, 50000) + '\n\n... (truncated - see artifact)' : report}
+            \`\`\`
+            
+            </details>
+            
+            ### 🔗 Resources
+            
+            - [Twelve-Factor App Methodology](https://12factor.net/)
+            - [Go Best Practices](https://golang.org/doc/effective_go)
+            - [Concurrency Patterns](https://go.dev/blog/pipelines)
+            
+            ---
+            
+            <sub>🤖 Auto-generated by [AI Agent](https://github.com/rcrala/ai-agent-go) | Run #${{ github.run_number }}</sub>
+            `;
+            
+            await github.rest.issues.create({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              title: `⚠️ Architecture Compliance Alert - Score: ${avgScore}/100`,
+              body: issueBody,
+              labels: ['tech-debt', 'architecture', 'automated-audit']
+            });
+            
+            console.log('✅ Issue created for low compliance score');
+      
+      - name: Add comment to issue if improvement needed
+        if: steps.analysis.outputs.status == 'improvement_needed'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const avgScore = parseInt('${{ steps.analysis.outputs.average }}');
+            
+            // Find existing audit issues
+            const issues = await github.rest.issues.listForRepo({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              labels: 'automated-audit',
+              state: 'open',
+              sort: 'created',
+              direction: 'desc',
+              per_page: 1
+            });
+            
+            if (issues.data.length > 0) {
+              const issueNumber = issues.data[0].number;
+              
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: issueNumber,
+                body: `## 📊 Weekly Audit Update\n\n**Date:** ${new Date().toISOString().split('T')[0]}\n**Score:** ${avgScore}/100 (70-79 range)\n**Status:** 🟡 Improvement Needed\n\nScore is above critical threshold but still has room for improvement.`
+              });
+            }
+      
+      - name: Close old audit issues if healthy
+        if: steps.analysis.outputs.status == 'healthy'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const avgScore = parseInt('${{ steps.analysis.outputs.average }}');
+            
+            // Find open audit issues
+            const issues = await github.rest.issues.listForRepo({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              labels: 'automated-audit',
+              state: 'open'
+            });
+            
+            for (const issue of issues.data) {
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: issue.number,
+                body: `## ✅ Architecture Compliance Restored\n\n**Date:** ${new Date().toISOString().split('T')[0]}\n**Score:** ${avgScore}/100\n**Status:** 🟢 Healthy\n\nCompliance score is now above 80. Closing this audit issue.`
+              });
+              
+              await github.rest.issues.update({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: issue.number,
+                state: 'closed'
+              });
+            }
+            
+            console.log(`✅ Closed ${issues.data.length} audit issues`);
+      
+      - name: Upload audit report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: weekly-audit-report-${{ github.run_number }}
+          path: ARQUITECTURE_COMPLIANCE.md
+          retention-days: 90  # Keep audits for 3 months
+      
+      - name: Send Teams notification
+        if: always() && secrets.TEAMS_WEBHOOK_URL != ''
+        run: |
+          score="${{ steps.analysis.outputs.average }}"
+          status="${{ steps.analysis.outputs.status }}"
+          
+          if [ "$status" = "action_required" ]; then
+            color="FF0000"
+            emoji="🔴"
+          elif [ "$status" = "improvement_needed" ]; then
+            color="FFA500"
+            emoji="🟡"
+          else
+            color="00FF00"
+            emoji="🟢"
+          fi
+          
+          curl -H 'Content-Type: application/json' -d "{
+            \"@type\": \"MessageCard\",
+            \"@context\": \"http://schema.org/extensions\",
+            \"themeColor\": \"$color\",
+            \"summary\": \"Weekly Architecture Audit\",
+            \"sections\": [{
+              \"activityTitle\": \"$emoji Weekly Architecture Audit\",
+              \"activitySubtitle\": \"Score: $score/100\",
+              \"facts\": [{
+                \"name\": \"Repository\",
+                \"value\": \"${{ github.repository }}\"
+              }, {
+                \"name\": \"Status\",
+                \"value\": \"$status\"
+              }, {
+                \"name\": \"Files Analyzed\",
+                \"value\": \"${{ steps.analysis.outputs.file_count }}\"
+              }],
+              \"markdown\": true
+            }],
+            \"potentialAction\": [{
+              \"@type\": \"OpenUri\",
+              \"name\": \"View Report\",
+              \"targets\": [{
+                \"os\": \"default\",
+                \"uri\": \"https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}\"
+              }]
+            }]
+          }" ${{ secrets.TEAMS_WEBHOOK_URL }}
+      
+      - name: Summary
+        if: always()
+        run: |
+          echo "### 📊 Weekly Architecture Audit" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Date:** $(date +'%Y-%m-%d')" >> $GITHUB_STEP_SUMMARY
+          echo "**Score:** ${{ steps.analysis.outputs.average }}/100" >> $GITHUB_STEP_SUMMARY
+          echo "**Files:** ${{ steps.analysis.outputs.file_count }}" >> $GITHUB_STEP_SUMMARY
+          echo "**Status:** ${{ steps.analysis.outputs.status }}" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "📄 [Download Full Report](https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }})" >> $GITHUB_STEP_SUMMARY

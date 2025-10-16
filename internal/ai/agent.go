@@ -66,9 +66,12 @@ type AIAgentConfig struct {
 	RequestIntervalMs int     `json:"RequestIntervalMs,omitempty"` // Optional: ms to wait between requests
 	UseMockMotorAI    bool    `json:"UseMockMotorAI,omitempty"`
 	// Optional retry/backoff/concurrency controls
-	MaxRetries       int `json:"MaxRetries,omitempty"`       // number of retries on retryable errors
-	BackoffInitialMs int `json:"BackoffInitialMs,omitempty"` // initial backoff in ms
-	MaxConcurrency   int `json:"MaxConcurrency,omitempty"`   // max concurrent evaluations
+	MaxRetries         int  `json:"MaxRetries,omitempty"`         // number of retries on retryable errors
+	BackoffInitialMs   int  `json:"BackoffInitialMs,omitempty"`   // initial backoff in ms
+	MaxConcurrency     int  `json:"MaxConcurrency,omitempty"`     // max concurrent evaluations
+	BackoffJitter      bool `json:"BackoffJitter,omitempty"`      // add random jitter to backoff (default: true)
+	CircuitBreakerMax  int  `json:"CircuitBreakerMax,omitempty"`  // max consecutive failures before circuit opens (0=disabled)
+	CircuitBreakerWait int  `json:"CircuitBreakerWait,omitempty"` // seconds to wait when circuit is open
 }
 
 // OpenAIClient envuelve el cliente OpenAI
@@ -77,6 +80,25 @@ type AIAgentConfig struct {
 // CodeEvaluator defines the interface for all AI agents
 type CodeEvaluator interface {
 	Evaluate(ctx context.Context, fileName, code string) (*EvaluationResult, error)
+}
+
+// EvaluationMetrics tracks metrics for evaluation runs
+type EvaluationMetrics struct {
+	TotalAttempts       int
+	SuccessCount        int
+	FailureCount        int
+	RetryCount          int
+	RateLimitCount      int // HTTP 429 errors
+	TotalLatencyMs      int64
+	CircuitBreakerTrips int
+}
+
+// CircuitBreakerState tracks circuit breaker state per agent
+type CircuitBreakerState struct {
+	mu                  sync.Mutex
+	consecutiveFailures int
+	isOpen              bool
+	openUntil           time.Time
 }
 
 // NewCodeEvaluator returns the appropriate agent implementation for the given config
@@ -153,18 +175,42 @@ Código a evaluar:
 // EvaluateFilesGeneric evalúa los archivos usando batching y respetando los
 // parámetros del agente: BatchSize y RequestIntervalMs. Si batchSize es 0
 // o negativo se procesan todos los archivos en una sola tanda.
+// Recopila métricas y gestiona circuit breaker si está configurado.
 func EvaluateFilesGeneric(ctx context.Context, evaluator CodeEvaluator, files []string, agentCfg AIAgentConfig) ([]*EvaluationResult, error) {
+	results, metrics := EvaluateFilesGenericWithMetrics(ctx, evaluator, files, agentCfg)
+
+	// Log metrics summary
+	if metrics.TotalAttempts > 0 {
+		avgLatency := metrics.TotalLatencyMs / int64(metrics.TotalAttempts)
+		fmt.Printf("[Metrics] Agent: %s | Success: %d | Failures: %d | Retries: %d | RateLimits(429): %d | AvgLatency: %dms | CircuitBreaks: %d\n",
+			agentCfg.Type, metrics.SuccessCount, metrics.FailureCount, metrics.RetryCount, metrics.RateLimitCount, avgLatency, metrics.CircuitBreakerTrips)
+	}
+
+	return results, nil
+}
+
+// EvaluateFilesGenericWithMetrics returns results and detailed metrics
+func EvaluateFilesGenericWithMetrics(ctx context.Context, evaluator CodeEvaluator, files []string, agentCfg AIAgentConfig) ([]*EvaluationResult, *EvaluationMetrics) {
+	metrics := &EvaluationMetrics{}
+
 	if len(files) == 0 {
-		return []*EvaluationResult{}, nil
+		return []*EvaluationResult{}, metrics
+	}
+
+	// Initialize circuit breaker if configured
+	var cb *CircuitBreakerState
+	if agentCfg.CircuitBreakerMax > 0 {
+		cb = &CircuitBreakerState{}
 	}
 
 	batchSize := determineBatchSize(agentCfg.BatchSize, len(files))
 	maxConc := determineMaxConcurrency(agentCfg.MaxConcurrency, batchSize)
 	sem := make(chan struct{}, maxConc)
 
-	evaluateWithRetries := createFileEvaluator(ctx, evaluator, agentCfg, sem)
+	evaluateWithRetries := createFileEvaluatorWithMetrics(ctx, evaluator, agentCfg, sem, metrics, cb)
 
-	return processBatches(files, batchSize, agentCfg.RequestIntervalMs, evaluateWithRetries)
+	results, _ := processBatches(files, batchSize, agentCfg.RequestIntervalMs, evaluateWithRetries)
+	return results, metrics
 }
 
 // determineBatchSize calculates the appropriate batch size
@@ -194,6 +240,20 @@ func createFileEvaluator(ctx context.Context, evaluator CodeEvaluator, agentCfg 
 			return nil, fmt.Errorf("error leyendo archivo %s: %w", fpath, err)
 		}
 		return evaluateWithBackoff(ctx, evaluator, fpath, string(contentBytes), agentCfg)
+	}
+}
+
+// createFileEvaluatorWithMetrics returns a function that evaluates with metrics and circuit breaker
+func createFileEvaluatorWithMetrics(ctx context.Context, evaluator CodeEvaluator, agentCfg AIAgentConfig, sem chan struct{}, metrics *EvaluationMetrics, cb *CircuitBreakerState) func(string) (*EvaluationResult, error) {
+	return func(fpath string) (*EvaluationResult, error) {
+		sem <- struct{}{}
+		defer func() { <-sem }()
+
+		contentBytes, err := os.ReadFile(fpath)
+		if err != nil {
+			return nil, fmt.Errorf("error leyendo archivo %s: %w", fpath, err)
+		}
+		return evaluateWithBackoffAndMetrics(ctx, evaluator, fpath, string(contentBytes), agentCfg, metrics, cb)
 	}
 }
 
@@ -416,53 +476,228 @@ func applyGeneralEnvOverrides(cfg *AgentConfig) {
 	}
 }
 
-// evaluateWithBackoff performs evaluation with retries and exponential backoff
+// evaluateWithBackoff performs evaluation with retries, exponential backoff, jitter, and metrics
 func evaluateWithBackoff(ctx context.Context, evaluator CodeEvaluator, filePath, content string, cfg AIAgentConfig) (*EvaluationResult, error) {
-	attempts := 1
-	if cfg.MaxRetries > 0 {
-		attempts = cfg.MaxRetries + 1
-	}
-	backoffMs := cfg.BackoffInitialMs
-	if backoffMs <= 0 {
-		backoffMs = 500
+	return evaluateWithBackoffAndMetrics(ctx, evaluator, filePath, content, cfg, nil, nil)
+}
+
+// evaluateWithBackoffAndMetrics performs evaluation with full observability
+func evaluateWithBackoffAndMetrics(ctx context.Context, evaluator CodeEvaluator, filePath, content string, cfg AIAgentConfig, metrics *EvaluationMetrics, cb *CircuitBreakerState) (*EvaluationResult, error) {
+	if err := checkCircuitBreaker(cb, metrics); err != nil {
+		return nil, err
 	}
 
+	attempts := calculateAttempts(cfg.MaxRetries)
+	backoffMs := getInitialBackoff(cfg.BackoffInitialMs)
+
+	return executeWithRetries(ctx, evaluator, filePath, content, cfg, metrics, cb, attempts, backoffMs)
+}
+
+// checkCircuitBreaker validates circuit breaker state
+func checkCircuitBreaker(cb *CircuitBreakerState, metrics *EvaluationMetrics) error {
+	if cb != nil && cb.isCircuitOpen() {
+		if metrics != nil {
+			metrics.CircuitBreakerTrips++
+		}
+		return fmt.Errorf("circuit breaker is open for this agent")
+	}
+	return nil
+}
+
+// calculateAttempts determines retry attempts from config
+func calculateAttempts(maxRetries int) int {
+	if maxRetries > 0 {
+		return maxRetries + 1
+	}
+	return 1
+}
+
+// getInitialBackoff returns initial backoff delay
+func getInitialBackoff(configBackoff int) int {
+	if configBackoff <= 0 {
+		return 500
+	}
+	return configBackoff
+}
+
+// executeWithRetries handles the retry loop with backoff
+func executeWithRetries(ctx context.Context, evaluator CodeEvaluator, filePath, content string, cfg AIAgentConfig, metrics *EvaluationMetrics, cb *CircuitBreakerState, attempts, backoffMs int) (*EvaluationResult, error) {
 	var lastErr error
+
 	for attempt := 0; attempt < attempts; attempt++ {
 		if ctx.Err() != nil {
 			return nil, ctx.Err()
 		}
-		res, err := evaluator.Evaluate(ctx, filePath, content)
+
+		result, err := performSingleAttempt(ctx, evaluator, filePath, content, metrics)
 		if err == nil {
-			return res, nil
+			recordSuccess(metrics, cb)
+			return result, nil
 		}
+
 		lastErr = err
+		recordFailureMetrics(err, attempt, metrics)
+
 		if !isRetryableError(err) {
+			recordCircuitBreakerFailure(cb, cfg, metrics)
 			break
 		}
-		// exponential backoff
-		sleepMs := backoffMs * (1 << attempt)
-		time.Sleep(time.Duration(sleepMs) * time.Millisecond)
+
+		if attempt == attempts-1 {
+			recordCircuitBreakerFailure(cb, cfg, metrics)
+			break
+		}
+
+		sleepWithBackoff(attempt, backoffMs, cfg)
 	}
+
 	return nil, lastErr
 }
 
+// performSingleAttempt executes a single evaluation attempt
+func performSingleAttempt(ctx context.Context, evaluator CodeEvaluator, filePath, content string, metrics *EvaluationMetrics) (*EvaluationResult, error) {
+	start := time.Now()
+	result, err := evaluator.Evaluate(ctx, filePath, content)
+	latency := time.Since(start).Milliseconds()
+
+	if metrics != nil {
+		metrics.TotalAttempts++
+		metrics.TotalLatencyMs += latency
+	}
+
+	return result, err
+}
+
+// recordSuccess updates metrics and circuit breaker on successful evaluation
+func recordSuccess(metrics *EvaluationMetrics, cb *CircuitBreakerState) {
+	if metrics != nil {
+		metrics.SuccessCount++
+	}
+	if cb != nil {
+		cb.recordSuccess()
+	}
+}
+
+// recordFailureMetrics tracks failure-related metrics
+func recordFailureMetrics(err error, attempt int, metrics *EvaluationMetrics) {
+	if metrics == nil {
+		return
+	}
+
+	if attempt > 0 {
+		metrics.RetryCount++
+	}
+	metrics.FailureCount++
+
+	if httpErr, ok := err.(*HTTPError); ok && httpErr.StatusCode == 429 {
+		metrics.RateLimitCount++
+	}
+}
+
+// recordCircuitBreakerFailure handles circuit breaker failure recording
+func recordCircuitBreakerFailure(cb *CircuitBreakerState, cfg AIAgentConfig, metrics *EvaluationMetrics) {
+	if cb == nil {
+		return
+	}
+
+	tripped := cb.recordFailure(cfg.CircuitBreakerMax, cfg.CircuitBreakerWait)
+	if tripped && metrics != nil {
+		metrics.CircuitBreakerTrips++
+	}
+}
+
+// sleepWithBackoff applies exponential backoff with jitter
+func sleepWithBackoff(attempt, backoffMs int, cfg AIAgentConfig) {
+	sleepMs := backoffMs * (1 << attempt)
+
+	if shouldUseJitter(cfg) {
+		sleepMs = addJitter(sleepMs)
+	}
+
+	time.Sleep(time.Duration(sleepMs) * time.Millisecond)
+}
+
+// shouldUseJitter determines if jitter should be applied
+func shouldUseJitter(cfg AIAgentConfig) bool {
+	return cfg.BackoffJitter || (!cfg.BackoffJitter && cfg.MaxRetries > 0)
+}
+
+// addJitter adds random jitter to backoff delay
+func addJitter(sleepMs int) int {
+	jitterRange := sleepMs / 4
+	if jitterRange > 0 {
+		jitter := time.Now().UnixNano() % int64(jitterRange)
+		sleepMs += int(jitter)
+	}
+	return sleepMs
+}
+
+// HTTPError wraps an HTTP error response with status code for structured retry logic
+type HTTPError struct {
+	StatusCode int
+	Message    string
+}
+
+func (e *HTTPError) Error() string {
+	return fmt.Sprintf("HTTP %d: %s", e.StatusCode, e.Message)
+}
+
+// CircuitBreaker methods
+func (cb *CircuitBreakerState) recordSuccess() {
+	cb.mu.Lock()
+	defer cb.mu.Unlock()
+	cb.consecutiveFailures = 0
+	cb.isOpen = false
+}
+
+func (cb *CircuitBreakerState) recordFailure(maxFailures int, waitSeconds int) bool {
+	cb.mu.Lock()
+	defer cb.mu.Unlock()
+	cb.consecutiveFailures++
+	if maxFailures > 0 && cb.consecutiveFailures >= maxFailures {
+		cb.isOpen = true
+		cb.openUntil = time.Now().Add(time.Duration(waitSeconds) * time.Second)
+		return true // circuit opened
+	}
+	return false
+}
+
+func (cb *CircuitBreakerState) isCircuitOpen() bool {
+	cb.mu.Lock()
+	defer cb.mu.Unlock()
+	if cb.isOpen && time.Now().After(cb.openUntil) {
+		// circuit can be retried (half-open state)
+		cb.isOpen = false
+		cb.consecutiveFailures = 0
+	}
+	return cb.isOpen
+}
+
 // isRetryableError inspects the error to decide if a retry may help.
-// It looks for common rate-limit / temporary network patterns. Agents may
-// return provider-specific error types, so keep this conservative.
+// First checks for structured HTTPError with status code, then falls back to string inspection.
 func isRetryableError(err error) bool {
 	if err == nil {
 		return false
 	}
+
+	// Check for structured HTTPError with status code
+	var httpErr *HTTPError
+	if errors, ok := err.(*HTTPError); ok {
+		httpErr = errors
+	}
+	if httpErr != nil {
+		// Retry on 429 (rate limit) and 5xx (server errors)
+		return httpErr.StatusCode == 429 || (httpErr.StatusCode >= 500 && httpErr.StatusCode < 600)
+	}
+
+	// Fallback: string-based detection for non-structured errors
 	s := strings.ToLower(err.Error())
-	// common HTTP/retryable signals
 	if strings.Contains(s, "429") || strings.Contains(s, "too many requests") || strings.Contains(s, "rate limit") {
 		return true
 	}
 	if strings.Contains(s, "timeout") || strings.Contains(s, "temporary") || strings.Contains(s, "connection reset") {
 		return true
 	}
-	// provider specific guidance (OpenAI message)
 	if strings.Contains(s, "quota") || strings.Contains(s, "exceeded") {
 		return true
 	}

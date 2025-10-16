@@ -58,6 +58,10 @@ func evaluateAnthropicCode(ctx context.Context, fileName, code string, a *Anthro
 		return evaluateAnthropicCodeMock(fileName, code, a)
 	}
 	// Real integration not implemented yet
+	// When implemented, wrap HTTP errors with HTTPError for proper retry logic:
+	// if resp.StatusCode >= 400 {
+	//   return nil, &HTTPError{StatusCode: resp.StatusCode, Message: "..."}
+	// }
 	return nil, fmt.Errorf("anthropic real API integration not implemented")
 }
 
