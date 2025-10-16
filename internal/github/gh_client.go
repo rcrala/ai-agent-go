@@ -7,7 +7,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"io/ioutil"
 
 	logger "ai-agent-go/internal/logger"
 	"net/http"
@@ -47,63 +46,20 @@ type GitFile struct {
 	SHA string `json:"sha"`
 }
 
-// CreateBranch crea una rama temporal desde baseBranch
+// CreateBranch is a compatibility wrapper that ensures a branch exists by delegating to CreateBranchNew
 func (c *GHClient) CreateBranch(tempBranch, baseBranch string) error {
-	url := fmt.Sprintf("https://api.github.com/repos/%s/git/refs", c.Repo)
-	payload := map[string]interface{}{
-		"ref": "refs/heads/" + tempBranch,
-		"sha": c.getBranchSHA(baseBranch),
-	}
-	body, _ := json.Marshal(payload)
-
-	req, _ := http.NewRequest("POST", url, bytes.NewReader(body))
-	req.Header.Set("Authorization", authTokenPrefix+c.Token)
-	req.Header.Set("Accept", acceptHeader)
-
-	resp, err := c.Client.Do(req)
-	if err != nil {
-		return err
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode == 422 {
-		// La rama ya existe, se ignora
-		return nil
-	}
-	if resp.StatusCode >= 300 {
-		data, _ := ioutil.ReadAll(resp.Body)
-		return fmt.Errorf("error creando branch: %s", string(data))
-	}
-	return nil
+	return c.CreateBranchNew(tempBranch, baseBranch)
 }
 
 // -----------------------------
 // FUNCIONES AUXILIARES
 // -----------------------------
-// getBranchSHA obtiene SHA de la rama base
-func (c *GHClient) getBranchSHA(branch string) string {
-	url := fmt.Sprintf("https://api.github.com/repos/%s/branches/%s", c.Repo, branch)
-	req, _ := http.NewRequest("GET", url, nil)
-	req.Header.Set("Authorization", authTokenPrefix+c.Token)
-	req.Header.Set("Accept", acceptHeader)
+// Note: getBranchSHA removed — CreateBranchNew uses the refs endpoint and request helper which returns errors
 
-	resp, err := c.Client.Do(req)
-	if err != nil {
-		if c.log != nil {
-			c.log.Error("github", "getBranchSHA", fmt.Sprintf("Error HTTP obteniendo branch %s: %v", branch, err))
-		}
-		panic(err)
-	}
-	defer resp.Body.Close()
-	data, _ := io.ReadAll(resp.Body)
-	var respJSON map[string]interface{}
-	json.Unmarshal(data, &respJSON)
-	return respJSON["commit"].(map[string]interface{})["sha"].(string)
-}
-
-func (c *GHClient) request(method, url string, body []byte) ([]byte, error) {
+func (c *GHClient) request(method, url string, body []byte) ([]byte, int, error) {
 	req, err := http.NewRequestWithContext(c.ctx, method, url, bytes.NewReader(body))
 	if err != nil {
-		return nil, err
+		return nil, 0, err
 	}
 
 	req.Header.Set("Authorization", authTokenPrefix+c.Token)
@@ -117,19 +73,19 @@ func (c *GHClient) request(method, url string, body []byte) ([]byte, error) {
 		if c.log != nil {
 			c.log.Error("github", "request", fmt.Sprintf("HTTP request error: %v", err))
 		}
-		return nil, err
+		return nil, 0, err
 	}
 	defer resp.Body.Close()
 
+	data, _ := io.ReadAll(resp.Body)
 	if resp.StatusCode >= 400 {
-		data, _ := io.ReadAll(resp.Body)
 		if c.log != nil {
 			c.log.Error("github", "request", fmt.Sprintf("GitHub API error %d: %s", resp.StatusCode, string(data)))
 		}
-		return nil, fmt.Errorf("GitHub API error: %s", string(data))
+		return data, resp.StatusCode, fmt.Errorf("GitHub API error: %s", string(data))
 	}
 
-	return io.ReadAll(resp.Body)
+	return data, resp.StatusCode, nil
 }
 
 // -----------------------------
@@ -140,9 +96,9 @@ func (c *GHClient) request(method, url string, body []byte) ([]byte, error) {
 func (c *GHClient) CreateBranchNew(newBranch, baseBranch string) error {
 	// Obtener SHA de la rama base
 	urlRef := fmt.Sprintf("https://api.github.com/repos/%s/git/ref/heads/%s", c.Repo, baseBranch)
-	body, err := c.request("GET", urlRef, nil)
+	body, status, err := c.request("GET", urlRef, nil)
 	if err != nil {
-		return fmt.Errorf("error obteniendo ref base: %w", err)
+		return fmt.Errorf("error obteniendo ref base (status %d): %w", status, err)
 	}
 
 	var refData struct {
@@ -165,13 +121,19 @@ func (c *GHClient) CreateBranchNew(newBranch, baseBranch string) error {
 	}
 	payloadBytes, _ := json.Marshal(payload)
 
-	_, err = c.request("POST", url, payloadBytes)
+	// Try to create the ref. If it already exists (HTTP 422), treat as success.
+	_, status, err = c.request("POST", url, payloadBytes)
 	if err != nil {
+		// If the request helper returned a GitHub API error message, inspect it
+		if status == 422 || strings.Contains(err.Error(), "Reference already exists") || strings.Contains(err.Error(), "already exists") {
+			// branch already exists — not an error for our flow
+			if c.log != nil {
+				c.log.Info("github", "CreateBranchNew", fmt.Sprintf("La rama %s ya existe, continuando.", newBranch))
+			}
+			return nil
+		}
 		if c.log != nil {
 			c.log.Error("github", "CreateBranchNew", fmt.Sprintf("error creando branch %s: %v", newBranch, err))
-		}
-		if strings.Contains(err.Error(), "Reference already exists") {
-			return fmt.Errorf("la rama %s ya existe", newBranch)
 		}
 		return err
 	}
@@ -185,9 +147,9 @@ func (c *GHClient) CreateBranchNew(newBranch, baseBranch string) error {
 
 func (c *GHClient) GetFile(branch, path string) (*GitFile, error) {
 	url := fmt.Sprintf("https://api.github.com/repos/%s/contents/%s?ref=%s", c.Repo, path, branch)
-	data, err := c.request("GET", url, nil)
+	data, status, err := c.request("GET", url, nil)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("request failed (status %d): %w", status, err)
 	}
 
 	var file GitFile
@@ -207,9 +169,11 @@ func (c *GHClient) CreateFile(branch, path, content string) error {
 	}
 	payloadBytes, _ := json.Marshal(payload)
 
-	_, err := c.request("PUT", url, payloadBytes)
-	if err != nil && c.log != nil {
-		c.log.Error("github", "CreateFile", fmt.Sprintf("error creando archivo %s en %s: %v", path, branch, err))
+	_, status, err := c.request("PUT", url, payloadBytes)
+	if err != nil {
+		if c.log != nil {
+			c.log.Error("github", "CreateFile", fmt.Sprintf("error creando archivo %s en %s: status %d: %v", path, branch, status, err))
+		}
 	}
 	return err
 }
@@ -225,9 +189,11 @@ func (c *GHClient) UpdateFile(branch, path, content, sha string) error {
 	}
 	payloadBytes, _ := json.Marshal(payload)
 
-	_, err := c.request("PUT", url, payloadBytes)
-	if err != nil && c.log != nil {
-		c.log.Error("github", "UpdateFile", fmt.Sprintf("error actualizando archivo %s en %s: %v", path, branch, err))
+	_, status, err := c.request("PUT", url, payloadBytes)
+	if err != nil {
+		if c.log != nil {
+			c.log.Error("github", "UpdateFile", fmt.Sprintf("error actualizando archivo %s en %s: status %d: %v", path, branch, status, err))
+		}
 	}
 	return err
 }
@@ -247,10 +213,10 @@ func (c *GHClient) CreatePullRequest(sourceBranch, baseBranch, title, body strin
 	}
 	payloadBytes, _ := json.Marshal(payload)
 
-	respData, err := c.request("POST", url, payloadBytes)
+	respData, status, err := c.request("POST", url, payloadBytes)
 	if err != nil {
 		if c.log != nil {
-			c.log.Error("github", "CreatePullRequest", fmt.Sprintf("error creando PR: %v", err))
+			c.log.Error("github", "CreatePullRequest", fmt.Sprintf("error creando PR: status %d: %v", status, err))
 		}
 		return 0, err
 	}
@@ -267,9 +233,22 @@ func (c *GHClient) CreatePullRequest(sourceBranch, baseBranch, title, body strin
 
 // CreateOrUpdateFileWithPR crea o actualiza un archivo y abre PR
 func CreateOrUpdateFileWithPR(ctx context.Context, c *GHClient, tempBranch, baseBranch, filePath, content string) (int, error) {
+	// 0️⃣ Asegurar que la rama temporal existe (crear desde baseBranch si no existe)
+	if err := c.CreateBranchNew(tempBranch, baseBranch); err != nil {
+		// CreateBranchNew already returns a friendly error when branch exists; log and continue
+		if c.log != nil {
+			c.log.Warning("github", "CreateOrUpdateFileWithPR", fmt.Sprintf("CreateBranchNew result: %v", err))
+		}
+		// If the error indicates the branch already exists, proceed; otherwise, continue and try operations which will surface the error
+	}
+
 	// 1️⃣ Crear o actualizar archivo
 	existingFile, err := c.GetFile(tempBranch, filePath)
 	if err != nil {
+		// If GetFile returned 404 because branch didn't exist or file not found, try to create the file
+		if c.log != nil {
+			c.log.Info("github", "CreateOrUpdateFileWithPR", fmt.Sprintf("File not found on branch %s: attempting to create it", tempBranch))
+		}
 		err = c.CreateFile(tempBranch, filePath, content)
 	} else {
 		err = c.UpdateFile(tempBranch, filePath, content, existingFile.SHA)

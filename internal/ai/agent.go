@@ -179,11 +179,58 @@ func ScanFiles(root string, exts []string) []string {
 
 // GenerateMarkdown genera un Markdown combinando resultados de evaluación
 func GenerateMarkdown(results []*EvaluationResult) string {
-	md := ""
-	for _, r := range results {
-		md += fmt.Sprintf("## %s\n\n%s\n\n---\n\n", r.File, r.RecomendacionesRefactor)
+	const paragraphFmt = "%s\n\n"
+	md := strings.Builder{}
+	if len(results) == 0 {
+		return ""
 	}
-	return md
+	for _, r := range results {
+		md.WriteString(fmt.Sprintf("## %s\n\n", r.File))
+		md.WriteString(fmt.Sprintf("**Score:** %d/100\n\n", r.Score))
+
+		writeListSection(&md, "### Factores no cumplidos", r.FactoresNoCumple)
+		writeListSection(&md, "### Problemas de concurrencia", r.ProblemasConcurrencia)
+
+		writeParagraphSection(&md, "### Recomendaciones de refactorización", r.RecomendacionesRefactor, paragraphFmt)
+		writeParagraphSection(&md, "### Recomendaciones sobre comentarios", r.RecomendacionesComentarios, paragraphFmt)
+		writeParagraphSection(&md, "### Documentación recomendada", r.Documentacion, paragraphFmt)
+
+		if len(r.EvaluacionFunciones) > 0 {
+			md.WriteString("### Evaluación por función\n\n")
+			md.WriteString("| Función | Claridad | Complejidad | Riesgo concurrencia | Sugerencias |\n")
+			md.WriteString("|---|---:|---:|---:|---|\n")
+			for _, f := range r.EvaluacionFunciones {
+				funcName := strings.ReplaceAll(f.Funcion, "|", "\\|")
+				suger := strings.ReplaceAll(f.Sugerencias, "|", "\\|")
+				md.WriteString(fmt.Sprintf("| %s | %s | %s | %s | %s |\n", funcName, f.Claridad, f.Complejidad, f.RiesgoConcurrencia, suger))
+			}
+			md.WriteString("\n")
+		}
+
+		md.WriteString("---\n\n")
+	}
+	return md.String()
+}
+
+// helper: write a list section (title + bullet list) if items exist
+func writeListSection(sb *strings.Builder, title string, items []string) {
+	if len(items) == 0 {
+		return
+	}
+	sb.WriteString(title + "\n\n")
+	for _, it := range items {
+		sb.WriteString(fmt.Sprintf("- %s\n", it))
+	}
+	sb.WriteString("\n")
+}
+
+// helper: write a paragraph section (title + paragraph) if content present
+func writeParagraphSection(sb *strings.Builder, title, content, fmtStr string) {
+	if strings.TrimSpace(content) == "" {
+		return
+	}
+	sb.WriteString(title + "\n\n")
+	sb.WriteString(fmt.Sprintf(fmtStr, content))
 }
 
 // RunSonarAnalysis ejecuta SonarQube (puede invocar CLI o API)

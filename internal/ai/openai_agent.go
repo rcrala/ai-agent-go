@@ -60,14 +60,14 @@ func NewOpenAIClient(apiKey, model string, maxTokens int, temperature float64, I
 func evaluateCode(ctx context.Context, fileName, code string, o *OpenAIEvaluator) (*EvaluationResult, error) {
 	// Validate if mock is enabled
 	if o.Client.IsMockEnabled {
-		return evaluateCodeMock(ctx, fileName, code, o)
+		return evaluateCodeMock(fileName, code, o)
 	}
 	// Call the real OpenAI API
 	return evaluateCodeReal(ctx, o.Client.Client, fileName, code, o.Client.Model, o.Client.MaxTokens, float32(o.Client.Temperature))
 }
 
 // evaluateCode use a Mock Response and parses the result
-func evaluateCodeMock(ctx context.Context, fileName, code string, o *OpenAIEvaluator) (*EvaluationResult, error) {
+func evaluateCodeMock(fileName, code string, o *OpenAIEvaluator) (*EvaluationResult, error) {
 	lg := logger.NewLogger()
 	// prompt := GetEvaluationPrompt(code)
 	lg.Debug("openai", "Evaluate", fmt.Sprintf("Evaluando archivo %s with %s model in Mock mode %s", fileName, o.Client.Model, os.Getenv("USE_MOCK_MOTOR_AI")))

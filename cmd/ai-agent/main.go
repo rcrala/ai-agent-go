@@ -4,6 +4,9 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"os/exec"
+	"strings"
+	"time"
 
 	"ai-agent-go/internal/ai"
 	githubclient "ai-agent-go/internal/github"
@@ -55,10 +58,49 @@ func main() {
 	cfg := loadConfigOrExit(log)
 	githubClient := githubclient.NewGHClient(ctx, cfg.GitHubToken, cfg.GitHubRepo)
 
+	// Record execution start
+	startTime := time.Now().UTC()
+
 	markdownAI := runAIAgents(ctx, log, cfg)
 	markdownSonar := runSonarIfEnabled(cfg, log)
 
 	finalReport := combineReports(markdownAI, markdownSonar)
+
+	// Record execution end
+	endTime := time.Now().UTC()
+
+	// Build engine/agent metadata
+	engineInfo := ""
+	engineInfo += "## Execution Metadata\n\n"
+	engineInfo += fmt.Sprintf("- Start: %s\n", startTime.Format(time.RFC3339))
+	engineInfo += fmt.Sprintf("- End:   %s\n", endTime.Format(time.RFC3339))
+	// Try to get current commit hash
+	commitHash := "unknown"
+	if out, err := exec.Command("git", "rev-parse", "--short", "HEAD").Output(); err == nil {
+		commitHash = strings.TrimSpace(string(out))
+	}
+	engineInfo += fmt.Sprintf("- Commit: %s\n", commitHash)
+	engineInfo += fmt.Sprintf("- Global UseMockMotorAI: %v\n", cfg.UseMockMotorAI)
+	engineInfo += "- Agents:\n"
+	for _, a := range cfg.Agents {
+		if !a.Enabled {
+			continue
+		}
+		// determine effective mock for agent (agent-level override or global)
+		useMock := a.UseMockMotorAI || cfg.UseMockMotorAI
+		engineInfo += fmt.Sprintf("  - %s (model: %s) - UseMock: %v\n", a.Type, a.Model, useMock)
+	}
+	engineInfo += "\n---\n\n"
+
+	// Prepend metadata to report
+	finalReport = engineInfo + finalReport
+
+	// Persist a local copy of the generated report for review before creating PR
+	if err := os.WriteFile("ARQUITECTURE_COMPLIANCE.md", []byte(finalReport), 0644); err != nil {
+		log.Error("main", "WriteReportLocal", fmt.Sprintf("Error escribiendo ARCHITECTURE_COMPLIANCE.md localmente: %v", err))
+	} else {
+		log.Info("main", "WriteReportLocal", "Archivo ARCHITECTURE_COMPLIANCE.md escrito localmente")
+	}
 	tempBranch := fmt.Sprintf("ai-agent-update-%d", os.Getpid())
 	prNumber := createOrUpdatePR(ctx, githubClient, tempBranch, cfg, finalReport, log)
 

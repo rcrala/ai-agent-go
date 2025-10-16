@@ -8,7 +8,8 @@
       "MaxTokens": 1200,
       "Temperature": 0.0,
       "BatchSize": 3,
-      "RequestIntervalMs": 1000
+      "RequestIntervalMs": 1000,
+      "UseMockMotorAI": true
     },
     {
       "Type": "copilot",
