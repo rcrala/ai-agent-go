@@ -4,7 +4,7 @@ import (
 	logger "ai-agent-go/internal/logger"
 	"context"
 	"fmt"
-	"os"
+	"strconv"
 )
 
 // AnthropicEvaluator implements CodeEvaluator for Anthropic Claude API
@@ -63,7 +63,7 @@ func evaluateAnthropicCode(ctx context.Context, fileName, code string, a *Anthro
 
 func evaluateAnthropicCodeMock(fileName, code string, a *AnthropicEvaluator) (*EvaluationResult, error) {
 	lg := logger.NewLogger()
-	lg.Debug("anthropic", "evaluateAnthropicCodeMock", fmt.Sprintf("Evaluando archivo %s in Mock mode %s", fileName, os.Getenv("USE_MOCK_MOTOR_AI")))
+	lg.Debug("anthropic", "evaluateAnthropicCodeMock", fmt.Sprintf("Evaluando archivo %s in Mock mode %s", fileName, strconv.FormatBool(a.Client.IsMockEnabled)))
 	return &EvaluationResult{
 		File:                       fileName,
 		Score:                      78,

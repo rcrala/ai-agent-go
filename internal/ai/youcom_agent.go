@@ -4,7 +4,7 @@ import (
 	logger "ai-agent-go/internal/logger"
 	"context"
 	"fmt"
-	"os"
+	"strconv"
 )
 
 // YouComEvaluator implements CodeEvaluator for you.com LLM API
@@ -52,7 +52,7 @@ func evaluateYouComCode(ctx context.Context, fileName, code string, y *YouComEva
 
 func evaluateYouComCodeMock(fileName, code string, y *YouComEvaluator) (*EvaluationResult, error) {
 	lg := logger.NewLogger()
-	lg.Debug("youcom", "evaluateYouComCodeMock", fmt.Sprintf("Evaluando archivo %s in Mock mode %s", fileName, os.Getenv("USE_MOCK_MOTOR_AI")))
+	lg.Debug("youcom", "evaluateYouComCodeMock", fmt.Sprintf("Evaluando archivo %s in Mock mode %s", fileName, strconv.FormatBool(y.Client.IsMockEnabled)))
 	return &EvaluationResult{
 		File:                       fileName,
 		Score:                      75,

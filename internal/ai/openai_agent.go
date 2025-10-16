@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"strconv"
 	"strings"
 
 	openai "github.com/sashabaranov/go-openai"
@@ -69,10 +70,10 @@ func evaluateCode(ctx context.Context, fileName, code string, o *OpenAIEvaluator
 // evaluateCode use a Mock Response and parses the result
 func evaluateCodeMock(fileName, code string, o *OpenAIEvaluator) (*EvaluationResult, error) {
 	lg := logger.NewLogger()
-	// prompt := GetEvaluationPrompt(code)
-	lg.Debug("openai", "Evaluate", fmt.Sprintf("Evaluando archivo %s with %s model in Mock mode %s", fileName, o.Client.Model, os.Getenv("USE_MOCK_MOTOR_AI")))
+	//prompt := GetEvaluationPrompt(code)
+	lg.Debug("openai", "Evaluate", fmt.Sprintf("Evaluando archivo %s with %s model in Mock mode %s", fileName, o.Client.Model, strconv.FormatBool(o.Client.IsMockEnabled)))
 
-	lg.Info("openai", "evaluateCode", "OPENAI_MOCK=true -> returning mock EvaluationResult")
+	// Mock response simulating an AI evaluation
 	mock := &EvaluationResult{
 		File:                       fileName,
 		Score:                      75,

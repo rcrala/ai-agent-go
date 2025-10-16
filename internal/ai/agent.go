@@ -283,6 +283,8 @@ func overrideAgentKeysWithEnv(cfg *AgentConfig) {
 			envKey = "OPENAI_API_KEY"
 		case "copilot":
 			envKey = "COPILOT_API_KEY"
+		case "cohere":
+			envKey = "COHERE_API_KEY"
 		}
 
 		if envKey != "" {

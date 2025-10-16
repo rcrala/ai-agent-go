@@ -4,7 +4,7 @@ import (
 	logger "ai-agent-go/internal/logger"
 	"context"
 	"fmt"
-	"os"
+	"strconv"
 )
 
 // CopilotEvaluator implements CodeEvaluator for Copilot
@@ -54,7 +54,7 @@ func evaluateCopilotCode(ctx context.Context, fileName, code string, c *CopilotE
 
 func evaluateCopilotCodeMock(fileName, code string, c *CopilotEvaluator) (*EvaluationResult, error) {
 	lg := logger.NewLogger()
-	lg.Debug("copilot", "evaluateCopilotCodeMock", fmt.Sprintf("Evaluando archivo %s in Mock mode %s", fileName, os.Getenv("USE_MOCK_MOTOR_AI")))
+	lg.Debug("copilot", "evaluateCopilotCodeMock", fmt.Sprintf("Evaluando archivo %s in Mock mode %s", fileName, strconv.FormatBool(c.Client.IsMockEnabled)))
 	prompt := GetEvaluationPrompt(code)
 	lg.Debug("copilot", "prompt", prompt)
 	return &EvaluationResult{

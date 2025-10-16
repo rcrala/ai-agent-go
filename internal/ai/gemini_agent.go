@@ -4,7 +4,7 @@ import (
 	logger "ai-agent-go/internal/logger"
 	"context"
 	"fmt"
-	"os"
+	"strconv"
 )
 
 // GeminiEvaluator implements CodeEvaluator for Google Gemini (Vertex AI) API
@@ -52,7 +52,7 @@ func evaluateGeminiCode(ctx context.Context, fileName, code string, g *GeminiEva
 
 func evaluateGeminiCodeMock(fileName, code string, g *GeminiEvaluator) (*EvaluationResult, error) {
 	lg := logger.NewLogger()
-	lg.Debug("gemini", "evaluateGeminiCodeMock", fmt.Sprintf("Evaluando archivo %s in Mock mode %s", fileName, os.Getenv("USE_MOCK_MOTOR_AI")))
+	lg.Debug("gemini", "evaluateGeminiCodeMock", fmt.Sprintf("Evaluando archivo %s in Mock mode %s", fileName, strconv.FormatBool(g.Client.IsMockEnabled)))
 	return &EvaluationResult{
 		File:                       fileName,
 		Score:                      77,

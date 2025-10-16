@@ -4,7 +4,7 @@ import (
 	logger "ai-agent-go/internal/logger"
 	"context"
 	"fmt"
-	"os"
+	"strconv"
 )
 
 // MistralEvaluator implements CodeEvaluator for Mistral API
@@ -52,7 +52,7 @@ func evaluateMistralCode(ctx context.Context, fileName, code string, m *MistralE
 
 func evaluateMistralCodeMock(fileName, code string, m *MistralEvaluator) (*EvaluationResult, error) {
 	lg := logger.NewLogger()
-	lg.Debug("mistral", "evaluateMistralCodeMock", fmt.Sprintf("Evaluando archivo %s in Mock mode %s", fileName, os.Getenv("USE_MOCK_MOTOR_AI")))
+	lg.Debug("mistral", "evaluateMistralCodeMock", fmt.Sprintf("Evaluando archivo %s in Mock mode %s", fileName, strconv.FormatBool(m.Client.IsMockEnabled)))
 	return &EvaluationResult{
 		File:                       fileName,
 		Score:                      74,
