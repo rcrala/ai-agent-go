@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"os"
 
 	logger "ai-agent-go/internal/logger"
 	"net/http"
@@ -26,8 +27,34 @@ const (
 	acceptHeader    = "application/vnd.github+json"
 )
 
+// when running inside GitHub Actions and the runner cannot perform an operation
+// because of workflow permissions, return a helpful hint to troubleshoot.
+func actionsPermissionHint() string {
+	return "Si esto se ejecuta dentro de GitHub Actions, puede que el token de workflow no tenga permisos para crear o aprobar pull requests.\n" +
+		"Opciones de solución:\n" +
+		"1) Ajustar permisos del workflow en el archivo de flujo de trabajo (y/o en Settings → Actions → General → Workflow permissions): asegurar 'contents: write' y 'pull-requests: write'.\n" +
+		"   Ejemplo YAML:\n" +
+		"   permissions:\n" +
+		"     contents: write\n" +
+		"     pull-requests: write\n" +
+		"2) O usar un Personal Access Token (PAT) almacenado en un secret (por ejemplo ACTIONS_PAT) y exportarlo como GITHUB_TOKEN en el job:\n" +
+		"   - name: Set PAT as GITHUB_TOKEN\n" +
+		"     run: echo \"::add-mask::$ACTIONS_PAT\"; echo \"GITHUB_TOKEN=$ACTIONS_PAT\" >> $GITHUB_ENV\n" +
+		"     env:\n" +
+		"       ACTIONS_PAT: ${{ secrets.ACTIONS_PAT }}\n" +
+		"   Asegúrate de que el PAT tenga scope 'repo' para repos privados y los permisos necesarios.\n" +
+		"3) En ejecuciones locales, exportar GITHUB_TOKEN con un PAT antes de ejecutar la herramienta."
+}
+
 func NewGHClient(ctx context.Context, token, repo string) *GHClient {
 	lg := logger.NewLogger()
+	// If no token provided, attempt to fallback to ACTIONS_PAT (useful in GitHub Actions when using a PAT secret)
+	if strings.TrimSpace(token) == "" {
+		if pat := os.Getenv("ACTIONS_PAT"); pat != "" {
+			token = pat
+			lg.Info("github", "NewGHClient", "No token supplied, using ACTIONS_PAT from environment")
+		}
+	}
 	lg.Info("github", "NewGHClient", fmt.Sprintf("Inicializando GHClient para repo %s", repo))
 	return &GHClient{
 		ctx:    ctx,
@@ -79,10 +106,17 @@ func (c *GHClient) request(method, url string, body []byte) ([]byte, int, error)
 
 	data, _ := io.ReadAll(resp.Body)
 	if resp.StatusCode >= 400 {
-		if c.log != nil {
-			c.log.Error("github", "request", fmt.Sprintf("GitHub API error %d: %s", resp.StatusCode, string(data)))
+		msg := string(data)
+		// if we are running in GitHub Actions, provide an extra hint
+		hint := ""
+		if os.Getenv("GITHUB_ACTIONS") == "true" || resp.StatusCode == 403 {
+			hint = "\n\n" + actionsPermissionHint()
+			msg = msg + hint
 		}
-		return data, resp.StatusCode, fmt.Errorf("GitHub API error: %s", string(data))
+		if c.log != nil {
+			c.log.Error("github", "request", fmt.Sprintf("GitHub API error %d: %s", resp.StatusCode, msg))
+		}
+		return data, resp.StatusCode, fmt.Errorf("GitHub API error: %s", msg)
 	}
 
 	return data, resp.StatusCode, nil

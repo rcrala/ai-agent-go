@@ -1,0 +1,83 @@
+# Sample workflows for ai-agent-go demonstrating two approaches to allow PR creation from Actions
+# 1) permissions: write (recommended when you control the repo)
+# 2) PAT fallback (use when org policies prevent workflow permissions)
+
+name: ai-agent-sample
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [ 'dev' ]
+
+# Default permissions for the entire workflow (can be overridden per-job)
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  run-with-permissions:
+    name: Run AI Agent (workflow permissions)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Validate GITHUB_TOKEN present
+        run: |
+          if [ -z "$GITHUB_TOKEN" ]; then
+            echo "ERROR: GITHUB_TOKEN is not set. See docs/actions-permissions.md for setup instructions." >&2
+            exit 1
+          else
+            echo "GITHUB_TOKEN is set"
+          fi
+
+      - name: Setup Go
+        uses: actions/setup-go@v4
+        with:
+          go-version: '1.20'
+
+      - name: Build and run AI Agent (mock mode)
+        env:
+          USE_MOCK_MOTOR_AI: 'true'
+        run: |
+          go run ./cmd/ai-agent
+
+  run-with-pat-fallback:
+    name: Run AI Agent (PAT fallback)
+    runs-on: ubuntu-latest
+    needs: []
+    if: ${{ github.event_name == 'workflow_dispatch' }} # only for manual runs to avoid exposing PAT in uncontrolled triggers
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Validate GITHUB_TOKEN present (PAT fallback)
+        run: |
+          if [ -z "$GITHUB_TOKEN" ]; then
+            echo "ERROR: GITHUB_TOKEN is not set. Ensure ACTIONS_PAT secret is provided or set workflow permissions. See docs/actions-permissions.md" >&2
+            exit 1
+          else
+            echo "GITHUB_TOKEN is set"
+          fi
+
+      - name: Setup Go
+        uses: actions/setup-go@v4
+        with:
+          go-version: '1.20'
+
+      - name: Inject PAT as GITHUB_TOKEN (from secret ACTIONS_PAT)
+        env:
+          ACTIONS_PAT: ${{ secrets.ACTIONS_PAT }}
+        run: |
+          echo "GITHUB_TOKEN=$ACTIONS_PAT" >> $GITHUB_ENV        
+
+      - name: Build and run AI Agent (using PAT)
+        env:
+          USE_MOCK_MOTOR_AI: 'false'
+        run: |
+          go run ./cmd/ai-agent
+
+# Notes:
+# - The first job uses workflow permissions (permissions: contents/pull-requests write) and is safe for scheduled pushes or PRs
+# - The second job shows how to use a PAT secret (ACTIONS_PAT) and inject it as GITHUB_TOKEN; it is gated to manual dispatch to reduce risk
+# - If your organization blocks workflow-level permissions, use the PAT fallback with a dedicated service user PAT stored in secrets
