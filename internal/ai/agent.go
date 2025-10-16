@@ -7,6 +7,8 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
+	"time"
 )
 
 // ------------------------------
@@ -63,6 +65,10 @@ type AIAgentConfig struct {
 	BatchSize         int     `json:"BatchSize"`
 	RequestIntervalMs int     `json:"RequestIntervalMs,omitempty"` // Optional: ms to wait between requests
 	UseMockMotorAI    bool    `json:"UseMockMotorAI,omitempty"`
+	// Optional retry/backoff/concurrency controls
+	MaxRetries       int `json:"MaxRetries,omitempty"`       // number of retries on retryable errors
+	BackoffInitialMs int `json:"BackoffInitialMs,omitempty"` // initial backoff in ms
+	MaxConcurrency   int `json:"MaxConcurrency,omitempty"`   // max concurrent evaluations
 }
 
 // OpenAIClient envuelve el cliente OpenAI
@@ -144,21 +150,107 @@ Código a evaluar:
 }
 
 // EvaluateFilesGeneric evalúa todos los archivos usando cualquier agente que implemente CodeEvaluator
-func EvaluateFilesGeneric(ctx context.Context, evaluator CodeEvaluator, files []string) ([]*EvaluationResult, error) {
-	results := []*EvaluationResult{}
-	for _, file := range files {
-		contentBytes, err := os.ReadFile(file)
-		if err != nil {
-			return nil, fmt.Errorf("error leyendo archivo %s: %w", file, err)
-		}
-		res, err := evaluator.Evaluate(ctx, file, string(contentBytes))
-		if err != nil {
-			fmt.Println("Error evaluando:", file, err)
-			continue
-		}
-		results = append(results, res)
+// EvaluateFilesGeneric evalúa los archivos usando batching y respetando los
+// parámetros del agente: BatchSize y RequestIntervalMs. Si batchSize es 0
+// o negativo se procesan todos los archivos en una sola tanda.
+func EvaluateFilesGeneric(ctx context.Context, evaluator CodeEvaluator, files []string, agentCfg AIAgentConfig) ([]*EvaluationResult, error) {
+	if len(files) == 0 {
+		return []*EvaluationResult{}, nil
 	}
+
+	batchSize := determineBatchSize(agentCfg.BatchSize, len(files))
+	maxConc := determineMaxConcurrency(agentCfg.MaxConcurrency, batchSize)
+	sem := make(chan struct{}, maxConc)
+
+	evaluateWithRetries := createFileEvaluator(ctx, evaluator, agentCfg, sem)
+
+	return processBatches(files, batchSize, agentCfg.RequestIntervalMs, evaluateWithRetries)
+}
+
+// determineBatchSize calculates the appropriate batch size
+func determineBatchSize(configBatchSize, totalFiles int) int {
+	if configBatchSize <= 0 {
+		return totalFiles
+	}
+	return configBatchSize
+}
+
+// determineMaxConcurrency calculates the maximum concurrency limit
+func determineMaxConcurrency(configMaxConc, batchSize int) int {
+	if configMaxConc <= 0 {
+		return batchSize
+	}
+	return configMaxConc
+}
+
+// createFileEvaluator returns a function that evaluates a single file with semaphore control
+func createFileEvaluator(ctx context.Context, evaluator CodeEvaluator, agentCfg AIAgentConfig, sem chan struct{}) func(string) (*EvaluationResult, error) {
+	return func(fpath string) (*EvaluationResult, error) {
+		sem <- struct{}{}
+		defer func() { <-sem }()
+
+		contentBytes, err := os.ReadFile(fpath)
+		if err != nil {
+			return nil, fmt.Errorf("error leyendo archivo %s: %w", fpath, err)
+		}
+		return evaluateWithBackoff(ctx, evaluator, fpath, string(contentBytes), agentCfg)
+	}
+}
+
+// processBatches processes files in batches with concurrency control
+func processBatches(files []string, batchSize, intervalMs int, evaluateFunc func(string) (*EvaluationResult, error)) ([]*EvaluationResult, error) {
+	results := []*EvaluationResult{}
+
+	for i := 0; i < len(files); i += batchSize {
+		batch := getBatch(files, i, batchSize)
+		batchResults := processBatch(batch, evaluateFunc)
+		results = append(results, batchResults...)
+
+		if shouldSleep(intervalMs, i+batchSize, len(files)) {
+			time.Sleep(time.Duration(intervalMs) * time.Millisecond)
+		}
+	}
+
 	return results, nil
+}
+
+// getBatch extracts a batch of files starting at the given index
+func getBatch(files []string, start, batchSize int) []string {
+	end := start + batchSize
+	if end > len(files) {
+		end = len(files)
+	}
+	return files[start:end]
+}
+
+// processBatch processes a single batch of files concurrently
+func processBatch(batch []string, evaluateFunc func(string) (*EvaluationResult, error)) []*EvaluationResult {
+	var wg sync.WaitGroup
+	var mu sync.Mutex
+	results := []*EvaluationResult{}
+
+	for _, file := range batch {
+		wg.Add(1)
+		go func(f string) {
+			defer wg.Done()
+			res, err := evaluateFunc(f)
+			if err != nil {
+				fmt.Printf("Error evaluando: %s %v\n", f, err)
+				return
+			}
+			mu.Lock()
+			results = append(results, res)
+			mu.Unlock()
+		}(file)
+	}
+
+	wg.Wait()
+	return results
+}
+
+// shouldSleep determines if we should sleep between batches
+func shouldSleep(intervalMs, currentEnd, totalFiles int) bool {
+	return intervalMs > 0 && currentEnd < totalFiles
 }
 
 // ScanFiles busca archivos según extensiones
@@ -322,4 +414,57 @@ func applyGeneralEnvOverrides(cfg *AgentConfig) {
 			*ptr = v
 		}
 	}
+}
+
+// evaluateWithBackoff performs evaluation with retries and exponential backoff
+func evaluateWithBackoff(ctx context.Context, evaluator CodeEvaluator, filePath, content string, cfg AIAgentConfig) (*EvaluationResult, error) {
+	attempts := 1
+	if cfg.MaxRetries > 0 {
+		attempts = cfg.MaxRetries + 1
+	}
+	backoffMs := cfg.BackoffInitialMs
+	if backoffMs <= 0 {
+		backoffMs = 500
+	}
+
+	var lastErr error
+	for attempt := 0; attempt < attempts; attempt++ {
+		if ctx.Err() != nil {
+			return nil, ctx.Err()
+		}
+		res, err := evaluator.Evaluate(ctx, filePath, content)
+		if err == nil {
+			return res, nil
+		}
+		lastErr = err
+		if !isRetryableError(err) {
+			break
+		}
+		// exponential backoff
+		sleepMs := backoffMs * (1 << attempt)
+		time.Sleep(time.Duration(sleepMs) * time.Millisecond)
+	}
+	return nil, lastErr
+}
+
+// isRetryableError inspects the error to decide if a retry may help.
+// It looks for common rate-limit / temporary network patterns. Agents may
+// return provider-specific error types, so keep this conservative.
+func isRetryableError(err error) bool {
+	if err == nil {
+		return false
+	}
+	s := strings.ToLower(err.Error())
+	// common HTTP/retryable signals
+	if strings.Contains(s, "429") || strings.Contains(s, "too many requests") || strings.Contains(s, "rate limit") {
+		return true
+	}
+	if strings.Contains(s, "timeout") || strings.Contains(s, "temporary") || strings.Contains(s, "connection reset") {
+		return true
+	}
+	// provider specific guidance (OpenAI message)
+	if strings.Contains(s, "quota") || strings.Contains(s, "exceeded") {
+		return true
+	}
+	return false
 }

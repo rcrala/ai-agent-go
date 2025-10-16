@@ -137,7 +137,7 @@ func runAIAgents(ctx context.Context, log *logger.Logger, cfg *ai.AgentConfig) s
 			log.Info("AI", "runAIAgents", "No se encontraron archivos para evaluar")
 			continue
 		}
-		results, err := ai.EvaluateFilesGeneric(ctx, evaluator, files)
+		results, err := ai.EvaluateFilesGeneric(ctx, evaluator, files, agentCfg)
 		if err != nil {
 			log.Error("AI", "EvaluateFilesGeneric", fmt.Sprintf("Error evaluando archivos: %v", err))
 			continue
